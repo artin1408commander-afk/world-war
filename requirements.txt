@@ -1,0 +1,2 @@
+# Root proxy — real deps live in world-war/requirements.txt
+-r world-war/requirements.txt

@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python312"]
+
+[phases.install]
+cmds = ["pip install -r world-war/requirements.txt"]
+
+[start]
+cmd = "cd world-war && python main.py"
