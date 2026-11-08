@@ -1,14 +1,41 @@
+# Secrets & local config
 .env
+.env.*
+!.env.example
+config.py
+
+# Virtual env
 .venv/
 venv/
+env/
+
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+
+# Databases & backups
+DB/
 db/*.db
 db/*.db-*
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.bak
+*.backup
+
+# Logs & IDE
 *.log
 .idea/
 .vscode/
+*.swp
 
+# OS
+.DS_Store
+Thumbs.db

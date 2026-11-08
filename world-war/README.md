@@ -1,3 +1,42 @@
+# WORLD WAR — Railway deployment
+
+## Root Directory
+Set Railway **Root Directory** to: `world-war`
+
+## Start command
+`python main.py` (also in `Procfile` / `railway.toml`)
+
+## Required environment variables
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `BALE_TOKEN` | yes | Bale bot token (never commit) |
+| `OWNER_ID` | yes | Primary owner numeric ID |
+| `DATABASE_URL` | yes on Railway | Railway PostgreSQL URL |
+| `DATABASE_MODE` | optional | `postgres` or `sqlite` (auto: postgres if `DATABASE_URL` set) |
+| `MISE_PYTHON_GITHUB_ATTESTATIONS` | recommended | set to `false` |
+| `LOG_LEVEL` | optional | default `INFO` |
+| `SQLITE_PATH` | optional | only if using SQLite on a volume |
+
+## Security
+- `config.py` is **gitignored**. Use `config.example.py` locally.
+- Never put real tokens in git.
+- Revoke any token that was previously committed.
+
+## Database
+- **PostgreSQL**: primary production backend when `DATABASE_URL` is set.
+- **SQLite**: local Termux / optional volume via `SQLITE_PATH`.
+- Schema is applied from `database/migrations/*.sql` on startup, then module `ensure_tables()`.
+
+## Local Termux
+```bash
+cd world-war
+cp config.example.py config.py   # put your token only here
+pip install -r requirements.txt
+python main.py
+```
+
+---
+
 # WORLD WAR
 
 Multiplayer geopolitical & country-management simulation bot for **Bale**.

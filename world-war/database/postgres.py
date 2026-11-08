@@ -113,8 +113,20 @@ class PostgresDatabase(Database):
 
     @staticmethod
     def _convert(sql: str) -> str:
-        """Keep $1-style placeholders (asyncpg native)."""
-        return sql
+        """Normalize a few SQLite-isms for asyncpg while keeping $1 placeholders."""
+        s = sql
+        # INSERT OR IGNORE → ON CONFLICT DO NOTHING (simple cases)
+        if "INSERT OR IGNORE INTO" in s.upper():
+            import re
+            s = re.sub(
+                r"INSERT\s+OR\s+IGNORE\s+INTO",
+                "INSERT INTO",
+                s,
+                flags=re.IGNORECASE,
+            )
+            if "ON CONFLICT" not in s.upper():
+                s = s.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        return s
 
 
 class _PostgresConn(Database):

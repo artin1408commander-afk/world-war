@@ -218,7 +218,11 @@ async def async_main() -> None:
             raise RuntimeError("DB health failed")
         game = Game(db, owner_id=settings.owner_id, group_id=MAIN_GROUP)
         await game.bootstrap()
-        log.info("New Generation world ready owner_id=%s", settings.owner_id)
+        log.info(
+            "New Generation world ready owner_id=%s mode=%s",
+            settings.owner_id,
+            settings.database_mode,
+        )
 
         asyncio.create_task(daily_loop(game))
 

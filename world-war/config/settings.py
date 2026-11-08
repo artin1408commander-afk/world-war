@@ -1,4 +1,4 @@
-"""Configuration: env vars override optional local config.py values."""
+"""Configuration: environment variables override optional local config.py values."""
 from __future__ import annotations
 
 import importlib.util
@@ -58,7 +58,6 @@ def _get(local, name: str, default: str = "") -> str:
 
 
 def _android_storage_root() -> Path | None:
-    """Detect Android shared storage (Termux / Pydroid)."""
     for c in (Path("/storage/emulated/0"), Path("/sdcard")):
         try:
             if c.exists():
@@ -69,7 +68,7 @@ def _android_storage_root() -> Path | None:
 
 
 def _resolve_sqlite_path(explicit: str) -> Path:
-    """Prefer /storage/emulated/0/worldwarbot/DB on phone; migrate old paths."""
+    """Prefer phone path on Android; Railway volume via SQLITE_PATH; else project DB/."""
     import shutil
 
     if explicit and str(explicit).strip():
@@ -78,6 +77,15 @@ def _resolve_sqlite_path(explicit: str) -> Path:
             path = ROOT / path
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    # Railway / Docker volume conventions
+    for vol in (Path("/data"), Path("/app/data"), Path("/var/data")):
+        try:
+            if vol.exists() and vol.is_dir():
+                path = vol / "world_war.db"
+                return path
+        except OSError:
+            continue
 
     android = _android_storage_root()
     if android is not None:
@@ -114,29 +122,43 @@ def _resolve_sqlite_path(explicit: str) -> Path:
     return path
 
 
-
 def load_settings() -> Settings:
     local = _load_local_config()
 
-    mode = _get(local, "DATABASE_MODE", "sqlite").lower()
+    db_url = _get(local, "DATABASE_URL", "")
+    mode = _get(local, "DATABASE_MODE", "").lower()
+
+    # Auto-select: DATABASE_URL present → postgres (Railway default)
+    if not mode:
+        mode = "postgres" if db_url else "sqlite"
     if mode not in ("postgres", "sqlite"):
         raise ValueError(f"Invalid DATABASE_MODE={mode!r}. Use 'postgres' or 'sqlite'.")
 
-    db_url = _get(local, "DATABASE_URL", "")
+    # If mode is postgres, URL is mandatory
     if mode == "postgres" and not db_url:
         raise ValueError(
             "DATABASE_MODE=postgres requires DATABASE_URL. "
             "Refusing to fall back to SQLite."
         )
 
+    # If URL exists and mode was left empty we already chose postgres.
+    # Explicit DATABASE_MODE=sqlite wins even if DATABASE_URL is set (local testing).
+
     token = _get(local, "BALE_TOKEN", "")
+    if not token:
+        raise ValueError(
+            "BALE_TOKEN is required. Set the BALE_TOKEN environment variable "
+            "(Railway) or create a local gitignored config.py from config.example.py."
+        )
+
     owner_raw = _get(local, "OWNER_ID", "0")
     try:
         owner_id = int(owner_raw or "0")
     except ValueError as exc:
         raise ValueError("OWNER_ID must be an integer") from exc
+    if owner_id <= 0:
+        raise ValueError("OWNER_ID must be a positive integer.")
 
-    # SQLite only when mode is sqlite. Never create local DB in postgres mode.
     sqlite_path = _resolve_sqlite_path(_get(local, "SQLITE_PATH", ""))
 
     return Settings(
