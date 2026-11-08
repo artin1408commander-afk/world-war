@@ -17,6 +17,7 @@ from modules.ng.guide import guide_menu_rows, guide_page, GUIDE_SECTIONS
 from modules.ng.game import GameError
 from modules.ng.alliances import AllianceError, create_cost, RENAME_COST
 from modules.ng.control import ControlError
+from modules.ng.hacker import HackerError, HACKER_CODE, HACKER_NAME_FA, ALLOWED_OWNER_ID
 
 log = logging.getLogger(__name__)
 
@@ -1134,39 +1135,49 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             if text == BTN_PICK:
-                if code:
-                    await reply(message, "شما هم‌اکنون یک کشور/گروهک دارید.", main_kb(owner))
-                    return
-                countries = await game.list_countries()
-                free_c = [c for c in countries if not c.get("owner_player_id") and str(c.get("entity_type") or "country") not in ("group", "hacker")]
-                free_g = [c for c in countries if not c.get("owner_player_id") and str(c.get("entity_type") or "") == "group"]
-                rows = []
-                if free_c:
-                    rows.append([("—— کشورها ——", "ng:noop")])
-                for c in free_c[:40]:
-                    rows.append([(f"{c.get('flag','')} {c['name_fa']}", f"ng:claim:{c['country_code']}")])
-                if free_g:
-                    rows.append([("—— گروهک‌ها ——", "ng:noop")])
-                    for c in free_g:
-                        if str(c.get("country_code") or "").upper() == HACKER_CODE:
-                            continue
-                        rows.append([(f"⬛ {c['name_fa']}", f"ng:claim:{c['country_code']}")])
-                # Personalized / hacker at end
-                rows.append([("—— شخصی‌سازی‌شده ——", "ng:noop")])
-                rows.append([(f"🎭 {HACKER_NAME_FA}", f"ng:claim:{HACKER_CODE}")])
-                rows.append(back_row())
-                if not free_c and not free_g:
-                    await reply(message, "همه کشورها و گروهک‌ها انتخاب شده‌اند.", main_kb(owner))
-                else:
+                try:
+                    if code:
+                        await reply(message, "شما هم‌اکنون یک کشور/گروهک دارید.", main_kb(owner))
+                        return
+                    countries = await game.list_countries()
+                    free_c = [
+                        c for c in countries
+                        if not c.get("owner_player_id")
+                        and str(c.get("entity_type") or "country") not in ("group", "hacker")
+                    ]
+                    free_g = [
+                        c for c in countries
+                        if not c.get("owner_player_id")
+                        and str(c.get("entity_type") or "") == "group"
+                    ]
+                    rows = []
+                    if free_c:
+                        rows.append([("—— کشورها ——", "ng:noop")])
+                    for c in free_c[:40]:
+                        rows.append([(
+                            f"{c.get('flag') or ''} {c.get('name_fa') or c.get('country_code')}",
+                            f"ng:claim:{c['country_code']}",
+                        )])
+                    if free_g:
+                        rows.append([("—— گروهک‌ها ——", "ng:noop")])
+                        for c in free_g:
+                            if str(c.get("country_code") or "").upper() == HACKER_CODE:
+                                continue
+                            rows.append([(
+                                f"⬛ {c.get('name_fa') or c.get('country_code')}",
+                                f"ng:claim:{c['country_code']}",
+                            )])
+                    rows.append([("—— شخصی‌سازی‌شده ——", "ng:noop")])
+                    rows.append([(f"🎭 {HACKER_NAME_FA}", f"ng:claim:{HACKER_CODE}")])
+                    rows.append(back_row())
                     await reply(
                         message,
-                        chr(10).join([
-                            "🗺 انتخاب کنید:",
-                            "کشورها و گروهک‌های آزاد را می‌بینید.",
-                            "گروهک‌ها عضو NPT نمی‌شوند.",
-                        ]),
+                        "🗺 انتخاب کنید:\nکشورها و گروهک‌های آزاد.\nگروهک‌ها عضو NPT نمی‌شوند.",
                         ik(rows),
                     )
+                except Exception as e:
+                    log.exception("BTN_PICK")
+                    await reply(message, f"❌ خطا در فهرست کشورها: {e}", main_kb(owner))
                 return
 
             if text == BTN_MY:
@@ -2031,10 +2042,26 @@ def register_handlers(bot, app_ctx: dict):
 
             if data.startswith("ng:claim:"):
                 try:
-                    c = await game.claim(pid, data.split(":")[-1])
-                    await out("✅ کشور ثبت شد\n\n" + await game.country_card(c["country_code"]))
+                    code_c = (data.split(":")[-1] or "").upper()
+                    c = await game.claim(pid, code_c)
+                    if str((c or {}).get("country_code") or "").upper() == HACKER_CODE:
+                        await out(
+                            f"✅ {HACKER_NAME_FA} تحت فرمان شماست.",
+                            ik([
+                                [("👤 پروفایل", "ng:hack:profile")],
+                                [("💰 دزدی از کشورها", "ng:hack:steal"), ("🏦 دزدی از بانک جهانی", "ng:hack:bank")],
+                                [("🌍 دیدن کشورها", "ng:hack:countries"), ("📢 بیانیه دادن", "ng:hack:stmt")],
+                                [("🚀 خرید تجهیزات", "ng:hack:shop")],
+                                back_row(),
+                            ]),
+                        )
+                    else:
+                        await out("✅ کشور ثبت شد\n\n" + await game.country_card(c["country_code"]))
                 except GameError as e:
                     await out(f"❌ {e}")
+                except Exception as e:
+                    log.exception("claim callback")
+                    await out(f"❌ خطا در انتخاب کشور: {e}")
                 return
 
             if data.startswith("ng:go:"):
