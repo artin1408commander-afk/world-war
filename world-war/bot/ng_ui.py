@@ -4426,9 +4426,12 @@ def register_handlers(bot, app_ctx: dict):
                 target = data.split(":")[-1]
                 try:
                     msg = await game.hacker.steal_country(pid, target)
-                    await out(msg, ik([[("🔙 منوی هکر", "ng:hack:menu")]]))
+                    await out(msg, ik([[("💰 دزدی دوباره", "ng:hack:steal"), ("🔙 منو", "ng:hack:menu")]]), force_new=True)
+                except (HackerError, GameError) as e:
+                    await out(f"❌ {e}", ik([[("🔙 منو", "ng:hack:menu")]]), force_new=True)
                 except Exception as e:
-                    await out(f"❌ {e}")
+                    log.exception("hacker steal")
+                    await out(f"❌ {e}", force_new=True)
                 return
             if data == "ng:hack:bank":
                 try:
@@ -4552,42 +4555,35 @@ def register_handlers(bot, app_ctx: dict):
                 await out(f"🚀 فروشگاه هکر — دسته {cat}:\nروی آیتم بزن تا به سبد اضافه شود.", ik(rows))
                 return
 
-            if data.startswith("ng:hack:item:"):
+            if data.startswith("ng:hack:item:") or data.startswith("ng:buy:"):
                 try:
                     await game.hacker.assert_owner(pid)
-                    if not code or str(code).upper() != HACKER_CODE:
-                        await out("فقط مالک گروه هکری می‌تواند از این فروشگاه بخرد.")
-                        return
                     ic = data.split(":")[-1]
-                    msg = await game.cart_add(pid, ic, 1)
-                    meta = (game._cat or {}).get(ic) or {}
-                    name = meta.get("name_fa") or ic
-                    rows = [
-                        [("＋۱", f"ng:add:{ic}:1"), ("＋۵", f"ng:add:{ic}:5")],
-                        [("🛒 سبد", "ng:cart"), ("✅ تسویه", "ng:checkout")],
-                        [("🔙 فروشگاه هکر", "ng:hack:shop")],
-                    ]
-                    await out(f"✅ {name}\n{msg}", ik(rows))
-                except GameError as e:
-                    await out(f"❌ {e}")
-                except Exception as e:
-                    log.exception("hacker item add")
-                    await out(f"❌ {e}")
-                return
-
-            # legacy alias if any old messages still open
-            if data.startswith("ng:buy:"):
-                data_alias = "ng:hack:item:" + data.split(":")[-1]
-                try:
-                    await game.hacker.assert_owner(pid)
-                    if code and str(code).upper() == HACKER_CODE:
-                        ic = data.split(":")[-1]
-                        msg = await game.cart_add(pid, ic, 1)
-                        await out(f"✅ {msg}", ik([[("🛒 سبد", "ng:cart"), ("✅ تسویه", "ng:checkout")], [("🔙 فروشگاه", "ng:hack:shop")]]))
+                    # qty support: ng:hack:item:CODE:5
+                    parts = data.split(":")
+                    qty = 1.0
+                    if len(parts) >= 4 and parts[-1].isdigit():
+                        ic = parts[3] if data.startswith("ng:hack:item:") else parts[2]
+                        try:
+                            qty = float(parts[-1])
+                        except Exception:
+                            qty = 1.0
+                    elif data.startswith("ng:hack:item:"):
+                        ic = parts[3] if len(parts) > 3 else parts[-1]
                     else:
-                        await out("این دکمه منقضی شده. از فروشگاه دوباره وارد شوید.", ik([[("🏠 خانه", "ng:home")]]))
+                        ic = parts[-1]
+                    msg = await game.hacker.buy_item(pid, ic, qty)
+                    rows = [
+                        [("＋۱ دوباره", f"ng:hack:item:{ic}")],
+                        [("＋۵", f"ng:hack:item:{ic}:5")],
+                        [("🚀 فروشگاه هکر", "ng:hack:shop"), ("👤 پروفایل", "ng:hack:profile")],
+                    ]
+                    await out(msg, ik(rows), force_new=True)
+                except (GameError, HackerError) as e:
+                    await out(f"❌ {e}", ik([[("🚀 فروشگاه", "ng:hack:shop")]]), force_new=True)
                 except Exception as e:
-                    await out(f"❌ {e}")
+                    log.exception("hacker direct buy")
+                    await out(f"❌ خطا در خرید: {e}", ik([[("🚀 فروشگاه", "ng:hack:shop")]]), force_new=True)
                 return
 
             # Fallback: never fail silently

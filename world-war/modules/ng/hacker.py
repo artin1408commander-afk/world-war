@@ -18,17 +18,17 @@ ALLOWED_OWNER_ID = 1401214874
 ALLOWED_USERNAME = "mahbod_farajian"  # display aid only
 
 # Configurable defaults (override via settings attrs when present)
-STEAL_WAIT_MIN_SEC = 5 * 60
-STEAL_WAIT_MAX_SEC = 5 * 60
+STEAL_WAIT_MIN_SEC = 0
+STEAL_WAIT_MAX_SEC = 0
 STEAL_AMOUNT_MIN = 1_000_000
 STEAL_AMOUNT_MAX = 15_000_000
 STEAL_XP_BASE = 25
 BANK_MIN_LEVEL = 2
-BANK_COOLDOWN_SEC = 6 * 3600
+BANK_COOLDOWN_SEC = 0
 BANK_PERCENT_BASE = 0.005  # 0.5% of eligible world treasury pool cap per country share
 LEVEL_UP_BASE_COST = 5_000_000
 LEVEL_UP_COST_GROWTH = 1.45
-ANNOUNCE_COOLDOWN_SEC = 10 * 60
+ANNOUNCE_COOLDOWN_SEC = 0
 ANNOUNCE_MAX_LEN = 900
 
 
@@ -157,7 +157,18 @@ class HackerService:
                 log.exception("update ANON entity")
 
     def is_allowed_player(self, pid: int) -> bool:
-        return int(pid) == int(ALLOWED_OWNER_ID)
+        """Legacy allow-list + current ANON owner + game owners."""
+        try:
+            if int(pid) == int(ALLOWED_OWNER_ID):
+                return True
+        except Exception:
+            pass
+        try:
+            if self.g is not None and self.g.is_owner(int(pid)):
+                return True
+        except Exception:
+            pass
+        return True  # ownership of ANON is enforced in assert_owner
 
     def is_hacker_code(self, code: str | None) -> bool:
         return (code or "").upper() == HACKER_CODE
@@ -168,8 +179,6 @@ class HackerService:
         )
 
     async def assert_owner(self, pid: int) -> dict:
-        if not self.is_allowed_player(pid):
-            raise HackerError("فقط حساب مجاز می‌تواند گروه هکری آنانیموس را مدیریت کند.")
         c = await self.db.fetchrow(
             "SELECT * FROM ng_countries WHERE country_code=$1", (HACKER_CODE,)
         )
@@ -177,9 +186,26 @@ class HackerService:
             raise HackerError("ابتدا گروه هکری آنانیموس را از بخش انتخاب کشور انتخاب کنید.")
         g = await self.get_group()
         if not g:
+            # auto-heal profile row
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                await self.db.execute(
+                    """
+                    INSERT INTO ng_hacker_groups (country_code, owner_player_id, level, xp, treasury_cached, active, created_at, updated_at)
+                    VALUES ($1,$2,1,0,0,1,$3,$3)
+                    """,
+                    (HACKER_CODE, int(pid), now),
+                )
+            except Exception:
+                log.exception("auto create hacker group")
+            g = await self.get_group()
+        if not g:
             raise HackerError("پروفایل گروه هکری هنوز ساخته نشده است.")
         if int(g.get("active") or 0) != 1:
-            raise HackerError("گروه هکری فعلاً غیرفعال است.")
+            await self.db.execute(
+                "UPDATE ng_hacker_groups SET active=1 WHERE country_code=$1", (HACKER_CODE,)
+            )
+            g = await self.get_group()
         return g
 
     async def on_claim(self, pid: int) -> dict:
@@ -332,19 +358,7 @@ class HackerService:
         if target == HACKER_CODE:
             raise HackerError("هدف نامعتبر است.")
         now = datetime.now(timezone.utc)
-        next_at = g.get("next_steal_at")
-        if next_at:
-            try:
-                na = datetime.fromisoformat(str(next_at).replace("Z", "+00:00"))
-                if na.tzinfo is None:
-                    na = na.replace(tzinfo=timezone.utc)
-                if na > now:
-                    left = int((na - now).total_seconds())
-                    raise HackerError(f"هنوز در کول‌داون دزدی هستید ({left // 60} دقیقه).")
-            except HackerError:
-                raise
-            except Exception:
-                pass
+        # cooldown disabled by owner request
         level = int(g["level"] or 1)
         mn, mx = self._steal_bounds(level)
         amount = random.uniform(mn, mx)
@@ -376,7 +390,7 @@ class HackerService:
                 "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
                 (h_treas, HACKER_CODE),
             )
-            next_iso = (now + timedelta(seconds=wait)).isoformat()
+            next_iso = now.isoformat()  # no cooldown
             await tx.execute(
                 """
                 UPDATE ng_hacker_groups
@@ -463,19 +477,7 @@ class HackerService:
         if level < BANK_MIN_LEVEL:
             raise HackerError(f"بانک جهانی از Level {BANK_MIN_LEVEL} فعال است.")
         now = datetime.now(timezone.utc)
-        next_at = g.get("next_bank_at")
-        if next_at:
-            try:
-                na = datetime.fromisoformat(str(next_at).replace("Z", "+00:00"))
-                if na.tzinfo is None:
-                    na = na.replace(tzinfo=timezone.utc)
-                if na > now:
-                    left = int((na - now).total_seconds())
-                    raise HackerError(f"کول‌داون بانک: {left // 60} دقیقه.")
-            except HackerError:
-                raise
-            except Exception:
-                pass
+        # bank cooldown disabled
         pct = BANK_PERCENT_BASE * (1 + 0.15 * (level - BANK_MIN_LEVEL))
         pct = min(pct, 0.02)
         op_key = f"bank:{HACKER_CODE}:{now.strftime('%Y%m%d%H%M')}:{uuid.uuid4().hex[:8]}"
@@ -551,6 +553,83 @@ class HackerService:
             )
         return f"✅ دزدی بانک جهانی موفق\nمبلغ کل: {int(total_taken):,}\nکول‌داون: {BANK_COOLDOWN_SEC // 3600} ساعت"
 
+
+    async def buy_item(self, pid: int, item_code: str, qty: float = 1.0) -> str:
+        """Direct buy into ANON inventory (no cart dependency)."""
+        g = await self.assert_owner(pid)
+        item_code = (item_code or "").strip()
+        if not item_code:
+            raise HackerError("آیتم نامعتبر است.")
+        try:
+            qty = float(qty)
+        except Exception:
+            qty = 1.0
+        qty = max(1.0, min(qty, 50.0))
+        meta = {}
+        try:
+            meta = (getattr(self.g, "_cat", None) or {}).get(item_code) or {}
+        except Exception:
+            meta = {}
+        if not meta:
+            row = await self.db.fetchrow(
+                "SELECT * FROM ng_shop_catalog WHERE item_code=$1", (item_code,)
+            )
+            if not row:
+                raise HackerError("این آیتم در فروشگاه نیست.")
+            meta = dict(row)
+        cat = str(meta.get("category") or "")
+        if cat not in ("defense", "missile", "nuclear"):
+            raise HackerError("فقط پدافند / موشک / هسته‌ای برای هکر مجاز است.")
+        unit = float(meta.get("unit_price") or 0)
+        if unit <= 0:
+            raise HackerError("قیمت آیتم نامعتبر است.")
+        total = unit * qty
+        name = meta.get("name_fa") or item_code
+        async with self.db.transaction() as tx:
+            c = await tx.fetchrow(
+                "SELECT treasury FROM ng_countries WHERE country_code=$1 AND owner_player_id=$2",
+                (HACKER_CODE, int(pid)),
+            )
+            if not c:
+                raise HackerError("مالکیت گروه هکری معتبر نیست.")
+            treas = float(c.get("treasury") or 0)
+            if treas < total:
+                raise HackerError(f"خزانه کافی نیست. نیاز: {int(total):,} | موجودی: {int(treas):,}")
+            new_t = treas - total
+            await tx.execute(
+                "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
+                (new_t, HACKER_CODE),
+            )
+            inv = await tx.fetchrow(
+                "SELECT quantity FROM ng_inventory WHERE country_code=$1 AND item_code=$2",
+                (HACKER_CODE, item_code),
+            )
+            if inv:
+                await tx.execute(
+                    "UPDATE ng_inventory SET quantity=quantity+$1 WHERE country_code=$2 AND item_code=$3",
+                    (qty, HACKER_CODE, item_code),
+                )
+            else:
+                await tx.execute(
+                    "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
+                    (HACKER_CODE, item_code, qty),
+                )
+        try:
+            await self.g.sync_cash_from_country(HACKER_CODE)
+        except Exception:
+            pass
+        try:
+            await self.g.log_activity("hacker_buy", f"خرید {name} ×{int(qty)}", HACKER_CODE, pid)
+        except Exception:
+            pass
+        return (
+            f"✅ خرید موفق\n"
+            f"آیتم: {name}\n"
+            f"تعداد: {int(qty)}\n"
+            f"هزینه: {int(total):,}\n"
+            f"خزانه باقی‌مانده: {int(new_t):,}"
+        )
+
     async def queue_announcement(self, pid: int, body: str) -> str:
         g = await self.assert_owner(pid)
         body = (body or "").strip()
@@ -559,22 +638,7 @@ class HackerService:
         if len(body) > ANNOUNCE_MAX_LEN:
             raise HackerError(f"حداکثر {ANNOUNCE_MAX_LEN} کاراکتر.")
         now = datetime.now(timezone.utc)
-        # simple rate limit via last announcement
-        last = await self.db.fetchrow(
-            "SELECT created_at FROM ng_hacker_announcements WHERE country_code=$1 ORDER BY id DESC LIMIT 1",
-            (HACKER_CODE,),
-        )
-        if last and last.get("created_at"):
-            try:
-                la = datetime.fromisoformat(str(last["created_at"]).replace("Z", "+00:00"))
-                if la.tzinfo is None:
-                    la = la.replace(tzinfo=timezone.utc)
-                if (now - la).total_seconds() < ANNOUNCE_COOLDOWN_SEC:
-                    raise HackerError("برای بیانیه بعدی کمی صبر کنید.")
-            except HackerError:
-                raise
-            except Exception:
-                pass
+        # announcement cooldown disabled
         text = (
             f"📢 بیانیه {HACKER_NAME_FA}\n\n"
             f"{body}\n\n"
