@@ -4488,16 +4488,83 @@ def register_handlers(bot, app_ctx: dict):
                 if cat not in ("defense", "missile", "nuclear"):
                     await out("دسته غیرمجاز")
                     return
-                items = [it for it in game._cat.values() if (it.get("category") or "") == cat]
+                try:
+                    await game.hacker.assert_owner(pid)
+                except Exception as e:
+                    await out(f"❌ {e}")
+                    return
+                # ensure catalog loaded
+                try:
+                    await game.ensure_shop_catalog()
+                    await game._reload_catalog_prices()
+                except Exception:
+                    log.exception("hacker shop catalog reload")
+                items = [
+                    it for it in (game._cat or {}).values()
+                    if (it.get("category") or "") == cat
+                ]
+                if not items:
+                    # fallback: read from DB
+                    try:
+                        rows_db = await game.db.fetch(
+                            "SELECT * FROM ng_shop_catalog WHERE category=$1 ORDER BY unit_price ASC",
+                            (cat,),
+                        )
+                        items = [dict(r) for r in rows_db]
+                    except Exception:
+                        items = []
                 rows = []
-                for it in items[:20]:
-                    rows.append([(
-                        f"{it.get('name_fa')} — {int(float(it.get('unit_price') or 0)):,}",
-                        f"ng:buy:{it.get('item_code')}",
-                    )])
+                for it in items[:25]:
+                    ic = it.get("item_code") or it.get("code")
+                    if not ic:
+                        continue
+                    name = it.get("name_fa") or ic
+                    price = int(float(it.get("unit_price") or 0))
+                    rows.append([(f"{name} — {price:,}", f"ng:hack:item:{ic}")])
+                if not rows:
+                    await out("در این دسته آیتمی نیست.", ik([[("🔙 بازگشت", "ng:hack:shop")]]))
+                    return
                 rows.append([("🛒 سبد", "ng:cart"), ("✅ تسویه", "ng:checkout")])
                 rows.append([("🔙 بازگشت", "ng:hack:shop")])
-                await out(f"دسته {cat}:", ik(rows))
+                await out(f"🚀 فروشگاه هکر — دسته {cat}:\nروی آیتم بزن تا به سبد اضافه شود.", ik(rows))
+                return
+
+            if data.startswith("ng:hack:item:"):
+                try:
+                    await game.hacker.assert_owner(pid)
+                    if not code or str(code).upper() != HACKER_CODE:
+                        await out("فقط مالک گروه هکری می‌تواند از این فروشگاه بخرد.")
+                        return
+                    ic = data.split(":")[-1]
+                    msg = await game.cart_add(pid, ic, 1)
+                    meta = (game._cat or {}).get(ic) or {}
+                    name = meta.get("name_fa") or ic
+                    rows = [
+                        [("＋۱", f"ng:add:{ic}:1"), ("＋۵", f"ng:add:{ic}:5")],
+                        [("🛒 سبد", "ng:cart"), ("✅ تسویه", "ng:checkout")],
+                        [("🔙 فروشگاه هکر", "ng:hack:shop")],
+                    ]
+                    await out(f"✅ {name}\n{msg}", ik(rows))
+                except GameError as e:
+                    await out(f"❌ {e}")
+                except Exception as e:
+                    log.exception("hacker item add")
+                    await out(f"❌ {e}")
+                return
+
+            # legacy alias if any old messages still open
+            if data.startswith("ng:buy:"):
+                data_alias = "ng:hack:item:" + data.split(":")[-1]
+                try:
+                    await game.hacker.assert_owner(pid)
+                    if code and str(code).upper() == HACKER_CODE:
+                        ic = data.split(":")[-1]
+                        msg = await game.cart_add(pid, ic, 1)
+                        await out(f"✅ {msg}", ik([[("🛒 سبد", "ng:cart"), ("✅ تسویه", "ng:checkout")], [("🔙 فروشگاه", "ng:hack:shop")]]))
+                    else:
+                        await out("این دکمه منقضی شده. از فروشگاه دوباره وارد شوید.", ik([[("🏠 خانه", "ng:home")]]))
+                except Exception as e:
+                    await out(f"❌ {e}")
                 return
 
             # Fallback: never fail silently

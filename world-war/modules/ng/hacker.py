@@ -18,8 +18,8 @@ ALLOWED_OWNER_ID = 1401214874
 ALLOWED_USERNAME = "mahbod_farajian"  # display aid only
 
 # Configurable defaults (override via settings attrs when present)
-STEAL_WAIT_MIN_SEC = 15 * 60
-STEAL_WAIT_MAX_SEC = 30 * 60
+STEAL_WAIT_MIN_SEC = 5 * 60
+STEAL_WAIT_MAX_SEC = 5 * 60
 STEAL_AMOUNT_MIN = 1_000_000
 STEAL_AMOUNT_MAX = 15_000_000
 STEAL_XP_BASE = 25
@@ -317,9 +317,13 @@ class HackerService:
         return f"✅ ارتقا انجام شد.\nلول جدید: {level + 1}\nهزینه: {int(cost):,}"
 
     def _steal_bounds(self, level: int) -> tuple[float, float]:
+        """Steal range grows with level (cap so it stays balanced)."""
         level = max(1, int(level))
+        # L1: 1M-15M, each level +12% min / +18% max, hard cap 80M
         mn = STEAL_AMOUNT_MIN * (1 + 0.12 * (level - 1))
         mx = STEAL_AMOUNT_MAX * (1 + 0.18 * (level - 1))
+        mn = min(mn, 40_000_000)
+        mx = min(max(mx, mn + 1), 80_000_000)
         return float(mn), float(mx)
 
     async def steal_country(self, pid: int, target: str) -> str:
@@ -402,6 +406,32 @@ class HackerService:
             label = await self.g.country_label(target)
         except Exception:
             label = target
+        # public anonymous group notice (no player identity)
+        try:
+            tname = await self.g.country_name_only(target)
+        except Exception:
+            tname = target
+        try:
+            await self.g.broadcast_log(
+                "admin",
+                f"🎭 عملیات مخفی {HACKER_NAME_FA}\n"
+                f"از خزانه «{tname}» حدود {int(taken):,} واحد سرقت شد.\n"
+                f"هویت عامل نامشخص است.",
+            )
+            await self.g.log_activity(
+                "group_hacker_steal",
+                f"🎭 {HACKER_NAME_FA} از «{tname}» دزدی کرد ({int(taken):,} تومان).",
+                target,
+                None,
+            )
+        except Exception:
+            log.exception("hacker steal group log")
+        try:
+            await self.g.sync_cash_from_country(target)
+            await self.g.sync_cash_from_country(HACKER_CODE)
+        except Exception:
+            pass
+
         return (
             f"✅ دزدی موفق از {label}\n"
             f"مبلغ: {int(taken):,}\n"
@@ -550,11 +580,19 @@ class HackerService:
             f"{body}\n\n"
             f"— {HACKER_FLAG}"
         )
-        # Use existing broadcast pipeline without owner approval
+        # Force group delivery via activity queue (group_log_loop)
         try:
-            await self.g.broadcast_log("hacker_statement", text)
+            await self.g.log_activity("group_hacker_statement", text, HACKER_CODE, None)
+        except Exception:
+            log.exception("hacker statement group activity")
+        try:
+            await self.g.broadcast_log("admin", text)
         except Exception:
             log.exception("hacker broadcast")
+        try:
+            await self.g.broadcast_log("statement", text)
+        except Exception:
+            log.exception("hacker statement flag broadcast")
         nid = await self.db.fetchrow(
             "SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_hacker_announcements"
         )
