@@ -16,6 +16,7 @@ from modules.ng.legendary import LegendaryService, LegendaryError
 from modules.ng.alliances import AllianceService, AllianceError, create_cost, DESTROY_WAIT_SEC
 from modules.ng.control import ControlService, ControlError
 from modules.ng.donations import DonationService, DonationError
+from modules.ng.hacker import HackerService, HackerError, HACKER_CODE, ALLOWED_OWNER_ID
 
 log = logging.getLogger(__name__)
 TEHRAN = ZoneInfo("Asia/Tehran")
@@ -51,6 +52,7 @@ class Game:
         self.legendary = LegendaryService(self)
         self.control = ControlService(self)
         self.donations = DonationService(self)
+        self.hacker = HackerService(self)
 
     # ---------- bootstrap ----------
     async def bootstrap(self) -> None:
@@ -103,6 +105,8 @@ class Game:
             log.exception("legendary ensure")
         try:
             await self.donations.ensure_tables()
+            await self.hacker.ensure_tables()
+            await self.hacker.ensure_seed_country()
         except Exception:
             log.exception("donations ensure")
         try:
@@ -534,6 +538,16 @@ class Game:
         )
         return bool(row) and str(row.get("entity_type") or "country") == "group"
 
+    async def is_hacker(self, code: str | None) -> bool:
+        if not code:
+            return False
+        if (code or "").upper() == HACKER_CODE:
+            return True
+        row = await self.db.fetchrow(
+            "SELECT entity_type FROM ng_countries WHERE country_code=$1", (code,)
+        )
+        return bool(row) and str(row.get("entity_type") or "") == "hacker"
+
     async def list_countries(self, *, for_owner: bool = False, include_un: bool = False) -> list[dict]:
         # heal inconsistent rows: owned but marked destroyed
         try:
@@ -587,6 +601,11 @@ class Game:
         code = code.upper()
         if code == UN_CODE:
             raise GameError("کشور سازمان ملل فقط متعلق به مالک بازی است و قابل انتخاب نیست.")
+        if code == HACKER_CODE or code == "ANON":
+            if int(pid) != int(ALLOWED_OWNER_ID):
+                raise GameError(
+                    "گروه هکری آنانیموس فقط برای کاربر مجاز قابل انتخاب است."
+                )
         p = await self.touch_player(pid)
         # live ownership beats stale ng_players.country_code cache
         live = await self.resolve_country_for_player(int(pid))
@@ -655,6 +674,8 @@ class Game:
                 """,
                 (code, pid),
             )
+        if code == HACKER_CODE:
+            await self.hacker.on_claim(pid)
         await self.log_activity("claim", f"انتخاب کشور {await self.country_name_only(code)}", code, pid)
         return await self.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (code,))
 

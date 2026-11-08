@@ -522,6 +522,17 @@ def register_handlers(bot, app_ctx: dict):
             if pid in _pending:
                 st = _pending[pid]
                 kind = st.get("kind")
+                if kind == "hacker_statement":
+                    try:
+                        msg = await game.hacker.queue_announcement(pid, text)
+                        _pending.pop(pid, None)
+                        await reply(message, msg, main_kb(owner))
+                    except (HackerError, GameError) as e:
+                        await reply(message, f"❌ {e}", ik([cancel_row()]))
+                    except Exception as e:
+                        log.exception("hacker_statement")
+                        await reply(message, f"❌ {e}")
+                    return
                 if kind == "add_co_owner" and game.is_primary_owner(pid):
                     raw = (text or "").strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
                     try:
@@ -1099,7 +1110,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, "شما هم‌اکنون یک کشور/گروهک دارید.", main_kb(owner))
                     return
                 countries = await game.list_countries()
-                free_c = [c for c in countries if not c.get("owner_player_id") and str(c.get("entity_type") or "country") != "group"]
+                free_c = [c for c in countries if not c.get("owner_player_id") and str(c.get("entity_type") or "country") not in ("group", "hacker")]
                 free_g = [c for c in countries if not c.get("owner_player_id") and str(c.get("entity_type") or "") == "group"]
                 rows = []
                 if free_c:
@@ -1109,7 +1120,12 @@ def register_handlers(bot, app_ctx: dict):
                 if free_g:
                     rows.append([("—— گروهک‌ها ——", "ng:noop")])
                     for c in free_g:
+                        if str(c.get("country_code") or "").upper() == HACKER_CODE:
+                            continue
                         rows.append([(f"⬛ {c['name_fa']}", f"ng:claim:{c['country_code']}")])
+                # Personalized / hacker at end
+                rows.append([("—— شخصی‌سازی‌شده ——", "ng:noop")])
+                rows.append([(f"🎭 {HACKER_NAME_FA}", f"ng:claim:{HACKER_CODE}")])
                 rows.append(back_row())
                 if not free_c and not free_g:
                     await reply(message, "همه کشورها و گروهک‌ها انتخاب شده‌اند.", main_kb(owner))
@@ -1127,6 +1143,19 @@ def register_handlers(bot, app_ctx: dict):
 
             if text == BTN_MY:
                 nav_push(pid, "country")
+                if code and str(code).upper() == HACKER_CODE:
+                    await reply(
+                        message,
+                        f"🎭 منوی {HACKER_NAME_FA}",
+                        ik([
+                            [("👤 پروفایل", "ng:hack:profile")],
+                            [("💰 دزدی از کشورها", "ng:hack:steal"), ("🏦 دزدی از بانک جهانی", "ng:hack:bank")],
+                            [("🌍 دیدن کشورها", "ng:hack:countries"), ("📢 بیانیه دادن", "ng:hack:stmt")],
+                            [("🚀 خرید تجهیزات", "ng:hack:shop")],
+                            back_row(),
+                        ]),
+                    )
+                    return
                 if not code:
                     await reply(message, "ابتدا «انتخاب کشور» را بزنید.", main_kb(owner))
                     return
@@ -4105,6 +4134,190 @@ def register_handlers(bot, app_ctx: dict):
                     await out(await game.remove_forced_chat(pid, int(data.split(":")[-1])))
                 except GameError as e:
                     await out(f"❌ {e}")
+                return
+
+
+            # ---- Anonymous Hacker Group ----
+            if data in ("ng:hack:menu", "ng:hack:home"):
+                await out(
+                    "🎭 منوی گروه هکری آنانیموس",
+                    ik([
+                        [("👤 پروفایل", "ng:hack:profile")],
+                        [("💰 دزدی از کشورها", "ng:hack:steal"), ("🏦 دزدی از بانک جهانی", "ng:hack:bank")],
+                        [("🌍 دیدن کشورها", "ng:hack:countries"), ("📢 بیانیه دادن", "ng:hack:stmt")],
+                        [("🚀 خرید تجهیزات", "ng:hack:shop")],
+                        back_row(),
+                    ]),
+                )
+                return
+            if data == "ng:hack:profile":
+                try:
+                    txt = await game.hacker.profile_text(pid)
+                    await out(txt, ik([
+                        [("⬆️ لول‌آپ", "ng:hack:lvlup")],
+                        [("🔙 بازگشت", "ng:hack:menu")],
+                    ]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:hack:lvlup":
+                try:
+                    txt = await game.hacker.levelup_preview(pid)
+                    await out(txt, ik([
+                        [("✅ تأیید ارتقا", "ng:hack:lvlup:yes")],
+                        [("🔙 بازگشت", "ng:hack:profile")],
+                    ]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:hack:lvlup:yes":
+                try:
+                    await out(await game.hacker.level_up(pid), ik([[("🔙 پروفایل", "ng:hack:profile")]]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:hack:steal":
+                try:
+                    await game.hacker.assert_owner(pid)
+                    countries = [
+                        c for c in await game.list_countries()
+                        if c.get("owner_player_id") and str(c.get("country_code") or "").upper() != "ANON"
+                    ]
+                    rows = []
+                    for c in countries[:30]:
+                        rows.append([(
+                            f"{c.get('flag','')} {c.get('name_fa')} | 💰{int(float(c.get('treasury') or 0)):,}",
+                            f"ng:hack:stv:{c['country_code']}",
+                        )])
+                    rows.append([("🔙 بازگشت", "ng:hack:menu")])
+                    await out("💰 انتخاب کشور هدف:", ik(rows))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data.startswith("ng:hack:stv:"):
+                target = data.split(":")[-1]
+                c = await game.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (target,))
+                if not c:
+                    await out("کشور یافت نشد")
+                    return
+                inv = await game.db.fetch(
+                    "SELECT COUNT(*) AS n FROM ng_inventory WHERE country_code=$1 AND quantity>0",
+                    (target,),
+                )
+                n_eq = int((inv[0]["n"] if inv else 0) or 0)
+                hp = float(c.get("hp") or 0)
+                mx = float(c.get("max_hp") or 1000) or 1000
+                txt = (
+                    f"هدف: {c.get('flag','')} {c.get('name_fa')}\n"
+                    f"HP: {int(hp)}/{int(mx)} ({int(100*hp/mx)}%)\n"
+                    f"خزانه: {int(float(c.get('treasury') or 0)):,}\n"
+                    f"تجهیزات (نوع): {n_eq}\n"
+                    f"مالک: {c.get('owner_player_id')}"
+                )
+                await out(txt, ik([
+                    [("💰 انجام دزدی", f"ng:hack:do:{target}")],
+                    [("🔙 بازگشت", "ng:hack:steal")],
+                ]))
+                return
+            if data.startswith("ng:hack:do:"):
+                target = data.split(":")[-1]
+                try:
+                    msg = await game.hacker.steal_country(pid, target)
+                    await out(msg, ik([[("🔙 منوی هکر", "ng:hack:menu")]]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:hack:bank":
+                try:
+                    txt = await game.hacker.bank_info(pid)
+                    g = await game.hacker.get_group()
+                    level = int((g or {}).get("level") or 1)
+                    if level >= 2:
+                        rows = [[("✅ اجرای دزدی بانک", "ng:hack:bankgo")], [("🔙 بازگشت", "ng:hack:menu")]]
+                    else:
+                        rows = [[("متوجه شدم", "ng:hack:menu")]]
+                    await out(txt, ik(rows))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:hack:bankgo":
+                try:
+                    msg = await game.hacker.bank_heist(pid)
+                    await out(msg, ik([[("🔙 منوی هکر", "ng:hack:menu")]]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:hack:countries" or data.startswith("ng:hack:cp:"):
+                page = 0
+                if data.startswith("ng:hack:cp:"):
+                    try:
+                        page = int(data.split(":")[-1])
+                    except Exception:
+                        page = 0
+                countries = await game.list_countries(include_un=True)
+                page_size = 12
+                total = len(countries)
+                pages = max(1, (total + page_size - 1) // page_size)
+                page = max(0, min(page, pages - 1))
+                chunk = countries[page * page_size:(page + 1) * page_size]
+                lines = [f"🌍 کشورها — صفحه {page+1}/{pages}", ""]
+                rows = []
+                show_id = game.is_owner(pid)
+                for c in chunk:
+                    hp = float(c.get("hp") or 0)
+                    mx = float(c.get("max_hp") or 1000) or 1000
+                    owner = c.get("owner_player_id")
+                    oid = str(owner) if (show_id and owner) else ("—" if not owner else "محرمانه")
+                    lines.append(
+                        f"{c.get('flag','')} {c.get('name_fa')} | HP {int(100*hp/mx)}% | "
+                        f"💰{int(float(c.get('treasury') or 0)):,} | مالک:{oid}"
+                    )
+                nav = []
+                if page > 0:
+                    nav.append(("⬅️ قبلی", f"ng:hack:cp:{page-1}"))
+                if page + 1 < pages:
+                    nav.append(("بعدی ➡️", f"ng:hack:cp:{page+1}"))
+                if nav:
+                    rows.append(nav)
+                rows.append([("🔙 بازگشت", "ng:hack:menu")])
+                await out(chr(10).join(lines), ik(rows))
+                return
+            if data == "ng:hack:stmt":
+                try:
+                    await game.hacker.assert_owner(pid)
+                    _pending[pid] = {"kind": "hacker_statement"}
+                    await out("متن بیانیه را بنویسید:", ik([cancel_row()]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:hack:shop":
+                try:
+                    await game.hacker.assert_owner(pid)
+                    rows = [
+                        [("پدافندها", "ng:hack:sc:defense")],
+                        [("موشک‌ها", "ng:hack:sc:missile")],
+                        [("بمب اتم", "ng:hack:sc:nuclear")],
+                        [("🔙 بازگشت", "ng:hack:menu")],
+                    ]
+                    await out("🚀 فروشگاه اختصاصی — فقط سه دسته:", ik(rows))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data.startswith("ng:hack:sc:"):
+                cat = data.split(":")[-1]
+                if cat not in ("defense", "missile", "nuclear"):
+                    await out("دسته غیرمجاز")
+                    return
+                items = [it for it in game._cat.values() if (it.get("category") or "") == cat]
+                rows = []
+                for it in items[:20]:
+                    rows.append([(
+                        f"{it.get('name_fa')} — {int(float(it.get('unit_price') or 0)):,}",
+                        f"ng:buy:{it.get('item_code')}",
+                    )])
+                rows.append([("🛒 سبد", "ng:cart"), ("✅ تسویه", "ng:checkout")])
+                rows.append([("🔙 بازگشت", "ng:hack:shop")])
+                await out(f"دسته {cat}:", ik(rows))
                 return
 
             # Fallback: never fail silently
