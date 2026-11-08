@@ -1416,9 +1416,10 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 meta = await game.db.fetchrow("SELECT war_enabled FROM world_meta WHERE id=1")
                 war_on = bool(meta and int(meta.get("war_enabled") or 0))
-                # سازمان ملل (مالک) همیشه منوی نظامی کامل دارد؛ بازیکنان فقط وقتی جنگ باز است
-                is_un = (str(code).upper() == "UN") and bool(owner)
-                combat_on = war_on or is_un
+                # سازمان ملل و گروه هکری آنانیموس همیشه منوی نظامی کامل دارند
+                is_un = bool(owner) and str(code).upper() in ("UN", "UN2", "UN3")
+                is_hack = str(code).upper() in (HACKER_CODE, "ANON")
+                combat_on = war_on or is_un or is_hack
                 rows = []
                 if combat_on:
                     rows.append([("⚔️ حمله نظامی", "ng:atkmenu")])
@@ -3041,13 +3042,15 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             if data == "ng:atkmenu" or data.startswith("ng:atk:") or data.startswith("ng:fight:") or data.startswith("ng:nuke"):
-                is_un = (code or "").upper() == "UN" and owner
+                is_un = owner and (code or "").upper() in ("UN", "UN2", "UN3")
+                is_hack = (code or "").upper() in (HACKER_CODE, "ANON")
                 meta = await game.db.fetchrow("SELECT war_enabled FROM world_meta WHERE id=1")
-                if not is_un and (not meta or not int(meta.get("war_enabled") or 0)):
+                if not is_un and not is_hack and (not meta or not int(meta.get("war_enabled") or 0)):
                     await out(
                         "⚠️ امکان انجام حمله وجود ندارد.\n\nدر حال حاضر وضعیت جنگ در جهان بسته است.\nسازمان ملل باید جنگ را فعال کند."
                     )
                     return
+            
             if data == "ng:atkmenu" or data.startswith("ng:atkmenu:"):
                 if not code:
                     await out("هنوز کشوری تحت فرمان شما نیست.")
@@ -4546,7 +4549,7 @@ def register_handlers(bot, app_ctx: dict):
                         continue
                     name = it.get("name_fa") or ic
                     price = int(float(it.get("unit_price") or 0))
-                    rows.append([(f"{name} — {price:,}", f"ng:hack:item:{ic}")])
+                    rows.append([(f"{name} — {price:,}", f"ng:hbuy:{ic}")])
                 if not rows:
                     await out("در این دسته آیتمی نیست.", ik([[("🔙 بازگشت", "ng:hack:shop")]]))
                     return
@@ -4555,7 +4558,7 @@ def register_handlers(bot, app_ctx: dict):
                 await out(f"🚀 فروشگاه هکر — دسته {cat}:\nروی آیتم بزن تا به سبد اضافه شود.", ik(rows))
                 return
 
-            if data.startswith("ng:hack:item:") or data.startswith("ng:buy:"):
+            if data.startswith("ng:hbuy:") or data.startswith("ng:hack:item:") or data.startswith("ng:buy:"):
                 try:
                     await game.hacker.assert_owner(pid)
                     ic = data.split(":")[-1]
@@ -4568,13 +4571,13 @@ def register_handlers(bot, app_ctx: dict):
                             qty = float(parts[-1])
                         except Exception:
                             qty = 1.0
-                    elif data.startswith("ng:hack:item:"):
+                    elif data.startswith("ng:hbuy:") or data.startswith("ng:hack:item:"):
                         ic = parts[3] if len(parts) > 3 else parts[-1]
                     else:
                         ic = parts[-1]
                     msg = await game.hacker.buy_item(pid, ic, qty)
                     rows = [
-                        [("＋۱ دوباره", f"ng:hack:item:{ic}")],
+                        [("＋۱ دوباره", f"ng:hbuy:{ic}")],
                         [("＋۵", f"ng:hack:item:{ic}:5")],
                         [("🚀 فروشگاه هکر", "ng:hack:shop"), ("👤 پروفایل", "ng:hack:profile")],
                     ]

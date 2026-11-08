@@ -602,7 +602,25 @@ class Game:
         if code == UN_CODE:
             raise GameError("کشور سازمان ملل فقط متعلق به مالک بازی است و قابل انتخاب نیست.")
         if code == HACKER_CODE or code == "ANON":
-            if int(pid) != int(ALLOWED_OWNER_ID):
+            allowed = False
+            try:
+                if int(pid) == int(ALLOWED_OWNER_ID):
+                    allowed = True
+            except Exception:
+                pass
+            if self.is_owner(int(pid)):
+                allowed = True
+            # already the live owner can re-bind
+            try:
+                row = await self.db.fetchrow(
+                    "SELECT owner_player_id FROM ng_countries WHERE country_code=$1",
+                    (HACKER_CODE,),
+                )
+                if row and row.get("owner_player_id") and int(row["owner_player_id"]) == int(pid):
+                    allowed = True
+            except Exception:
+                pass
+            if not allowed:
                 raise GameError(
                     "گروه هکری آنانیموس فقط برای کاربر مجاز قابل انتخاب است."
                 )
@@ -1701,54 +1719,58 @@ class Game:
     async def can_attack(self, code: str, kind: str | None = None) -> tuple[bool, str]:
         if self.is_un_country(code):
             return True, ""
-        try:
-            await self.legendary.assert_can_attack(code)
-        except LegendaryError as e:
-            return False, str(e)
-        if await self.is_test_mode_player_country(code):
-            # test country of owner — still need some force unless test grants units
-            pass
+        # Anonymous hacker: no attack cooldown / legendary block; still need equipment
+        is_hack = (code or "").upper() in (HACKER_CODE, "ANON")
+        if not is_hack:
+            try:
+                await self.legendary.assert_can_attack(code)
+            except LegendaryError as e:
+                return False, str(e)
         kinds = [kind] if kind else ["ground", "air", "sea"]
         any_power = 0.0
         for k in kinds:
-            p, _ = await self.available_force(code, k)
-            any_power += p
+            pwr, _ = await self.available_force(code, k)
+            any_power += pwr
         if any_power <= 0:
-            return False, "نیروی نظامی قابل‌استفاده ندارید. ابتدا از فروشگاه تجهیز تهیه کنید."
-        ws = await self.db.fetchrow("SELECT * FROM ng_war_state WHERE country_code=$1", (code,))
-        if ws and ws.get("last_attack_at") and not await self.is_test_active_for_country(code):
+            return False, "نیروی نظامی قابل‌استفاده ندارید. ابتدا از فروشگاه هکر/عادی تجهیز بخرید."
+        if is_hack or await self.is_test_active_for_country(code):
+            return True, ""
+        ws = await self.db.fetchrow("SELECT * FROM ng_war_state WHERE country_code=$1", (code,) )
+        if ws and ws.get("last_attack_at"):
             try:
                 last = datetime.fromisoformat(str(ws["last_attack_at"]).replace("Z", "+00:00"))
                 if last.tzinfo is None:
                     last = last.replace(tzinfo=timezone.utc)
                 elapsed = (datetime.now(timezone.utc) - last).total_seconds()
-                if elapsed < await self.attack_cooldown_sec():
-                    left = int(await self.attack_cooldown_sec() - elapsed)
-                    return False, f"هنوز در محدودیت حمله هستید. {left} ثانیه صبر کنید."
+                need = await self.attack_cooldown_sec()
+                if elapsed < need:
+                    return False, f"محدودیت حمله: {int(need - elapsed)} ثانیه باقی مانده."
             except Exception:
                 pass
         return True, ""
 
     async def attack(self, attacker: str, defender: str, kind: str, percent: float, pid: int) -> str:
         un_atk = self.is_un_force(attacker, pid)
+        hack_atk = self.is_hacker_force(attacker, pid)
+        free_atk = un_atk or hack_atk
         meta = await self.db.fetchrow("SELECT * FROM world_meta WHERE id=1")
-        if not un_atk and meta and int(meta.get("war_enabled") or 0) != 1:
+        if not free_atk and meta and int(meta.get("war_enabled") or 0) != 1:
             raise GameError("جنگ توسط سازمان ملل بسته شده است.")
-        if not un_atk and await self.at_peace(attacker, defender):
+        if not free_atk and await self.at_peace(attacker, defender):
             raise GameError("پیمان صلح فعال است؛ حمله ممکن نیست.")
-        if not un_atk:
+        if not free_atk:
             try:
                 await self.legendary.assert_can_attack(attacker)
             except LegendaryError as e:
                 raise GameError(str(e)) from e
-        if not un_atk and await self.legendary.is_immune(defender):
+        if not free_atk and await self.legendary.is_immune(defender):
             raise GameError("کشور هدف مصونیت دارد؛ حمله بی‌اثر است.")
         if attacker == defender:
             raise GameError("نامعتبر")
         if kind not in ("ground", "air", "sea"):
             raise GameError("نوع درگیری نامعتبر است.")
         percent = max(10, min(100, float(percent)))
-        test_atk = await self.is_test_active_for_country(attacker) or un_atk
+        test_atk = await self.is_test_active_for_country(attacker) or free_atk
         cover = 0.0
         intercepted = 0.0
 
@@ -1766,7 +1788,7 @@ class Game:
             # cooldown inside transaction
             ws = await tx.fetchrow("SELECT * FROM ng_war_state WHERE country_code=$1", (attacker,))
             now = datetime.now(timezone.utc)
-            if ws and ws.get("last_attack_at") and not test_atk:
+            if ws and ws.get("last_attack_at") and not test_atk and not free_atk:
                 try:
                     last = datetime.fromisoformat(str(ws["last_attack_at"]).replace("Z", "+00:00"))
                     if last.tzinfo is None:
@@ -2456,6 +2478,14 @@ class Game:
         if pid is None:
             return True
         return self.is_owner(int(pid))
+
+    def is_hacker_force(self, code: str | None, pid: int | None = None) -> bool:
+        """گروه هکری آنانیموس — عملیات نظامی/دزدی بدون محدودیت جنگ بسته."""
+        if (code or "").upper() != HACKER_CODE and (code or "").upper() != "ANON":
+            return False
+        if pid is None:
+            return True
+        return True
 
 
 
@@ -4548,7 +4578,9 @@ class Game:
 
     async def attack_nuclear(self, attacker: str, defender: str, pid: int) -> str:
         un_atk = self.is_un_force(attacker, pid)
-        if not un_atk:
+        hack_atk = self.is_hacker_force(attacker, pid)
+        free_atk = un_atk or hack_atk
+        if not free_atk:
             try:
                 await self.legendary.assert_can_nuke(attacker)
                 await self.legendary.assert_can_attack(attacker)
@@ -4558,15 +4590,15 @@ class Game:
                 raise GameError("کشور هدف مصونیت دارد؛ حمله اتمی بی‌اثر است.")
         """Abstract nuclear strike: consumes 1 bomb, deals 25-35% max_hp damage."""
         meta = await self.db.fetchrow("SELECT * FROM world_meta WHERE id=1")
-        if not un_atk and meta and int(meta.get("war_enabled") or 0) != 1:
+        if not free_atk and meta and int(meta.get("war_enabled") or 0) != 1:
             raise GameError("جنگ توسط سازمان ملل بسته شده است.")
-        if not un_atk and meta and int(meta.get("nuclear_enabled") or 0) != 1:
+        if not free_atk and meta and int(meta.get("nuclear_enabled") or 0) != 1:
             raise GameError("قابلیت هسته‌ای بازی توسط سازمان ملل غیرفعال است. از /panel آن را فعال کنید.")
-        if await self.at_peace(attacker, defender):
+        if not free_atk and await self.at_peace(attacker, defender):
             raise GameError("پیمان صلح فعال است؛ حمله ممکن نیست.")
         if attacker == defender:
             raise GameError("نامعتبر")
-        test_atk = await self.is_test_active_for_country(attacker) or un_atk
+        test_atk = await self.is_test_active_for_country(attacker) or free_atk
         async with self.db.transaction() as tx:
             a = await tx.fetchrow(
                 "SELECT * FROM ng_countries WHERE country_code=$1 AND owner_player_id=$2",
@@ -4580,7 +4612,7 @@ class Game:
             # cooldown
             ws = await tx.fetchrow("SELECT * FROM ng_war_state WHERE country_code=$1", (attacker,))
             now = datetime.now(timezone.utc)
-            if ws and ws.get("last_attack_at") and not test_atk:
+            if ws and ws.get("last_attack_at") and not test_atk and not free_atk:
                 try:
                     last = datetime.fromisoformat(str(ws["last_attack_at"]).replace("Z", "+00:00"))
                     if last.tzinfo is None:
@@ -4592,8 +4624,8 @@ class Game:
                     raise
                 except Exception:
                     pass
-                        # accept both shop (nuke_bomb) and legacy (item_atom_bomb) codes
-            if not un_atk:
+            # accept both shop (nuke_bomb) and legacy (item_atom_bomb) codes
+            if not free_atk:
                 total_bombs = 0.0
                 for _ic in ATOM_BOMB_CODES:
                     _row = await tx.fetchrow(
