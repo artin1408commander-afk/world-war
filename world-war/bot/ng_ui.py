@@ -45,7 +45,7 @@ BTN_TREATY = "⚖ پیمان‌ها"
 BTN_WALLET = "💰 کیف پول"
 BTN_DONATE = "💎 حمایت مالی"
 BTN_MORE = "📂 منوی بیشتر"
-BTN_NPT = "☢ پیمان NPT"
+BTN_NPT = "پیمان NPT"
 
 _pending: dict[int, dict] = {}
 
@@ -77,9 +77,9 @@ def main_kb(is_owner: bool = False, has_country: bool = False) -> MenuKeyboardMa
     kb = MenuKeyboardMarkup()
     rows = [
         [BTN_GUIDE, BTN_MY],
-        [BTN_SHOP, BTN_ATTACK],
-        [BTN_ECO, BTN_INV],
-        [BTN_NPT, BTN_ALLY],
+        [BTN_NPT, BTN_SHOP],
+        [BTN_ATTACK, BTN_ECO],
+        [BTN_INV, BTN_ALLY],
         [BTN_WORLD, BTN_MORE],
         [BTN_PICK],
     ]
@@ -119,6 +119,7 @@ def more_menu_rows():
         [("⚖ پیمان‌ها", "ng:more:treaty"), ("💰 کیف پول", "ng:more:wallet")],
         [("📜 بیانیه", "ng:more:stmt"), ("📊 گزارش‌ها", "ng:more:report")],
         [("🎁 دعوت", "ng:more:ref"), ("💎 حمایت مالی", "ng:more:donate")],
+        [("پیمان NPT", "ng:more:npt")],
         [("ℹ️ درباره ما", "ng:more:about")],
         back_row(),
     ]
@@ -143,7 +144,7 @@ def cancel_row():
 MENU_TEXTS = {
     BTN_MY, BTN_ECO, BTN_SHOP, BTN_INV, BTN_MKT, BTN_TRADE, BTN_DIPLO,
     BTN_PEACE, BTN_ATTACK, BTN_STMT, BTN_WORLD, BTN_REPORT, BTN_PICK,
-    BTN_OWNER, BTN_WORKSHOP, BTN_ABOUT, BTN_GUIDE, BTN_REF, BTN_ALLY, BTN_CTRL, BTN_TREATY, BTN_WALLET, BTN_DONATE, BTN_MORE,
+    BTN_OWNER, BTN_WORKSHOP, BTN_ABOUT, BTN_GUIDE, BTN_REF, BTN_ALLY, BTN_CTRL, BTN_TREATY, BTN_WALLET, BTN_DONATE, BTN_MORE, BTN_NPT,
     "/start", "شروع", "منو", "menu", "/admin", "/owner", "/panel",
 }
 
@@ -1131,7 +1132,7 @@ def register_handlers(bot, app_ctx: dict):
                     log.exception("record_start")
                 start_msg = await game.get_setting("start_message", game.DEFAULT_START)
                 nav_home(pid)
-                await reply(message, start_msg, main_kb(owner))
+                await reply(message, start_msg, main_kb(owner, bool(code)))
                 # deep-link referral: /start WW123456
                 payload = ""
                 if text.startswith("/start"):
@@ -1179,7 +1180,8 @@ def register_handlers(bot, app_ctx: dict):
                     f"☢ پیمان منع گسترش سلاح‌های هسته‌ای (NPT)\n"
                     f"کشور: {cname}\n"
                     f"وضعیت فعلی: {st}\n\n"
-                    f"درخواست شما برای مالک ارسال می‌شود و پس از تأیید/رد، در گروه و پیوی اطلاع داده می‌شود.",
+                    f"درخواست شما برای مالک ارسال می‌شود و پس از تأیید/رد، در گروه و پیوی اطلاع داده می‌شود.\n"
+                    f"از دکمه‌های زیر عضویت یا خروج را انتخاب کنید.",
                     ik(rows),
                 )
                 return
@@ -1258,11 +1260,12 @@ def register_handlers(bot, app_ctx: dict):
                 card = await game.country_card(code)
                 rows = [
                     [("🏛 کنترل کشور", "ng:ctrl")],
+                    [("✅ عضویت NPT", "ng:npt:join"), ("🚪 خروج NPT", "ng:npt:leave")],
                     [("📦 انبار", "ng:go:inv"), ("💰 اقتصاد", "ng:go:eco")],
                     [("📜 گزارش", "ng:go:rep")],
                     back_row(),
                 ]
-                await reply(message, card, ik(rows))
+                await reply(message, card + "\n\n☢ برای عضویت/خروج از پیمان NPT از دکمه‌های زیر استفاده کنید.", ik(rows))
                 return
 
             if text == BTN_CTRL:
@@ -1685,6 +1688,26 @@ def register_handlers(bot, app_ctx: dict):
                     await out("🏠 منوی اصلی", main_kb(owner))
                 return
 
+
+            if data == "ng:more:npt":
+                if not code:
+                    await out("برای NPT ابتدا کشور انتخاب کنید.")
+                    return
+                if await game.is_group(code):
+                    await out("گروهک‌ها عضو NPT نمی‌شوند.")
+                    return
+                c = await game.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (code,))
+                st = "عضو NPT" if c and int(c.get("npt_member") or 0) == 1 else "غیرعضو NPT"
+                cname = (c or {}).get("name_fa") or code
+                await out(
+                    f"☢ پیمان NPT\nکشور: {cname}\nوضعیت: {st}",
+                    ik([
+                        [("✅ درخواست عضویت", "ng:npt:join")],
+                        [("🚪 درخواست خروج", "ng:npt:leave")],
+                        back_row(),
+                    ]),
+                )
+                return
 
             if data == "ng:more" or data.startswith("ng:more:"):
                 nav_push(pid, "more")
