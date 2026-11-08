@@ -342,9 +342,9 @@ def load_settings() -> Settings:
             _get(local, "UN_STARTING_TREASURY", "200000000"), 200_000_000.0
         ),
         max_loot_abs=_as_float(_get(local, "MAX_LOOT_ABS", "2000000"), 2_000_000.0),
-        ref_invitee_reward=_as_float(_get(local, "REF_INVITEE_REWARD", "2000000"), 2_000_000.0),
+        ref_invitee_reward=_as_float(_get(local, "REF_INVITEE_REWARD", "30000000"), 30_000_000.0),
         ref_referrer_reward=_as_float(
-            _get(local, "REF_REFERRER_REWARD", "15000000"), 15_000_000.0
+            _get(local, "REF_REFERRER_REWARD", "30000000"), 30_000_000.0
         ),
         bomb_money_cost=_as_float(_get(local, "BOMB_MONEY_COST", "15000000"), 15_000_000.0),
         ws_upgrade_base=_as_float(_get(local, "WS_UPGRADE_BASE", "2000000"), 2_000_000.0),

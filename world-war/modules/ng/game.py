@@ -1325,8 +1325,8 @@ class Game:
         return f"✅ کول‌داون حمله بازیکنان: {seconds} ثانیه ({seconds/60:.1f} دقیقه). سازمان ملل بدون کول‌داون است."
 
     BASE_DAILY_GRANT = 20_000_000  # fixed daily grant per owned country (Tehran day)
-    REF_INVITEE_REWARD = 2_000_000
-    REF_REFERRER_REWARD = 15_000_000
+    REF_INVITEE_REWARD = 30_000_000
+    REF_REFERRER_REWARD = 30_000_000
     MAX_LOOT_RATIO = 0.08  # max 8% of defender treasury
     MAX_LOOT_ABS = 2_000_000
 
@@ -5809,6 +5809,9 @@ class Game:
             lines.append(link_line)
         lines += [
             "",
+            f"پاداش دعوت‌شونده: {int(self.REF_INVITEE_REWARD):,} تومان",
+            f"پاداش دعوت‌کننده: {int(self.REF_REFERRER_REWARD):,} تومان",
+            "",
             f"تعداد زیرمجموعه‌ها: {len(kids)} نفر",
             f"شما زیرمجموعه چه کسی هستید؟ {referrer_txt}",
             "",
@@ -5821,67 +5824,126 @@ class Game:
         return "\n".join(lines)
 
     async def apply_referral_code(self, pid: int, code: str) -> str:
-        code = (code or "").strip().upper()
-        if not code:
+        """Bind invitee to referrer and pay both sides (atomic).
+
+        Accepts codes like WW123 / ww123 / 123 (player id form).
+        Requires both sides to already own a country.
+        """
+        raw = (code or "").strip()
+        # normalize Persian/Arabic digits and whitespace
+        raw = raw.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+        raw = raw.replace(" ", "").replace("‌", "")
+        code_u = raw.upper()
+        if not code_u:
             raise GameError("کد خالی است")
+
         me = await self.ensure_referral_row(pid)
         if me.get("referrer_id"):
             raise GameError("شما قبلاً دعوت‌کننده ثبت کرده‌اید.")
-        if str(me.get("referral_code") or "").upper() == code:
+        my_own = str(me.get("referral_code") or "").upper()
+        if my_own and (code_u == my_own or code_u == my_own.removeprefix("WW") or f"WW{code_u}" == my_own):
             raise GameError("نمی‌توانید کد خودتان را وارد کنید.")
-        all_r = await self.db.fetch("SELECT * FROM ng_referrals")
-        owner_row = next((r for r in all_r if str(r.get("referral_code") or "").upper() == code), None)
+
+        owner_row = None
+        # direct match
+        owner_row = await self.db.fetchrow(
+            "SELECT * FROM ng_referrals WHERE UPPER(TRIM(referral_code))=$1",
+            (code_u,),
+        )
+        if not owner_row and code_u.startswith("WW"):
+            owner_row = await self.db.fetchrow(
+                "SELECT * FROM ng_referrals WHERE UPPER(TRIM(referral_code))=$1",
+                (code_u[2:],),
+            )
+        if not owner_row and not code_u.startswith("WW"):
+            owner_row = await self.db.fetchrow(
+                "SELECT * FROM ng_referrals WHERE UPPER(TRIM(referral_code))=$1",
+                (f"WW{code_u}",),
+            )
+        if not owner_row and code_u.isdigit():
+            # fallback: code is numeric player id
+            try:
+                cand_pid = int(code_u)
+            except Exception:
+                cand_pid = None
+            if cand_pid is not None:
+                await self.ensure_referral_row(cand_pid)
+                owner_row = await self.db.fetchrow(
+                    "SELECT * FROM ng_referrals WHERE player_id=$1",
+                    (cand_pid,),
+                )
+
         if not owner_row:
-            raise GameError("کد دعوت نامعتبر است.")
+            raise GameError("کد دعوت نامعتبر است. کد را دقیق وارد کنید (مثال: WW123456).")
+
         rid = int(owner_row["player_id"])
         if rid == int(pid):
             raise GameError("نمی‌توانید کد خودتان را وارد کنید.")
         rp = await self.db.fetchrow("SELECT player_id FROM ng_players WHERE player_id=$1", (rid,))
         if not rp:
             raise GameError("دعوت‌کننده معتبر نیست.")
+
         my_code = await self.player_country(pid)
         ref_code_c = await self.player_country(rid)
         if not my_code:
             raise GameError("ابتدا کشور انتخاب کنید، بعد کد دعوت را وارد کنید.")
         if not ref_code_c:
             raise GameError("دعوت‌کننده هنوز کشور ندارد؛ بعداً تلاش کنید.")
+
+        invitee_pay = float(self.REF_INVITEE_REWARD)
+        referrer_pay = float(self.REF_REFERRER_REWARD)
         now = datetime.now(timezone.utc).isoformat()
+
         async with self.db.transaction() as tx:
             cur = await tx.fetchrow("SELECT * FROM ng_referrals WHERE player_id=$1", (pid,))
             if cur and cur.get("referrer_id"):
                 raise GameError("قبلاً ثبت شده")
             await tx.execute(
                 "UPDATE ng_referrals SET referrer_id=$1, bound_at=$2, invitee_reward=$3, referrer_reward=$4 WHERE player_id=$5",
-                (rid, now, self.REF_INVITEE_REWARD, self.REF_REFERRER_REWARD, pid),
+                (rid, now, invitee_pay, referrer_pay, pid),
             )
             me_c = await tx.fetchrow("SELECT treasury FROM ng_countries WHERE country_code=$1", (my_code,))
             ref_c = await tx.fetchrow("SELECT treasury FROM ng_countries WHERE country_code=$1", (ref_code_c,))
+            if not me_c or not ref_c:
+                raise GameError("کشور دعوت‌کننده یا دعوت‌شونده پیدا نشد.")
+            me_treasury = float(me_c.get("treasury") or 0) + invitee_pay
+            ref_treasury = float(ref_c.get("treasury") or 0) + referrer_pay
             await tx.execute(
                 "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
-                (float(me_c["treasury"]) + self.REF_INVITEE_REWARD, my_code),
+                (me_treasury, my_code),
             )
             await tx.execute(
                 "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
-                (float(ref_c["treasury"]) + self.REF_REFERRER_REWARD, ref_code_c),
+                (ref_treasury, ref_code_c),
             )
+
+        # mirror persistent player cash
         try:
-            await self.ledger_write("referral_invitee", self.REF_INVITEE_REWARD, pid, to_c=my_code, reason=code)
-            await self.ledger_write("referral_referrer", self.REF_REFERRER_REWARD, rid, to_c=ref_code_c, reason=code)
+            await self.sync_cash_from_country(my_code)
+            await self.sync_cash_from_country(ref_code_c)
         except Exception:
-            pass
-        await self.log_activity("referral", f"کد {code} توسط {pid}", my_code, pid)
+            log.exception("referral cash sync")
+
+        try:
+            await self.ledger_write("referral_invitee", invitee_pay, pid, to_c=my_code, reason=code_u)
+            await self.ledger_write("referral_referrer", referrer_pay, rid, to_c=ref_code_c, reason=code_u)
+        except Exception:
+            log.exception("referral ledger")
+
         try:
             await self.log_activity(
                 "dm_notice",
-                f"🎁 یک نفر با کد دعوت شما وارد شد و {int(self.REF_REFERRER_REWARD):,} به خزانه‌تان اضافه شد.",
-                player_id=rid,
+                f"🎁 یک نفر با کد دعوت شما وارد شد و {int(referrer_pay):,} تومان به خزانه‌تان اضافه شد.",
+                None,
+                rid,
             )
         except Exception:
-            pass
+            log.exception("referral dm")
+
         return (
-            f"✅ کد دعوت ثبت شد.\n"
-            f"پاداش شما: {int(self.REF_INVITEE_REWARD):,}\n"
-            f"پاداش دعوت‌کننده: {int(self.REF_REFERRER_REWARD):,}"
+            "✅ کد دعوت با موفقیت ثبت شد.\n"
+            f"پاداش شما: {int(invitee_pay):,} تومان\n"
+            f"پاداش دعوت‌کننده: {int(referrer_pay):,} تومان"
         )
 
     async def referral_stats_text(self) -> str:

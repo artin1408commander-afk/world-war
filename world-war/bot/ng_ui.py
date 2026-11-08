@@ -791,11 +791,16 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "ref_code":
+                    preset = st.get("preset")
                     _pending.pop(pid, None)
+                    code_in = (text or "").strip() or str(preset or "")
                     try:
-                        msg = await game.apply_referral_code(pid, text.strip())
+                        msg = await game.apply_referral_code(pid, code_in)
                     except GameError as e:
                         msg = f"❌ {e}"
+                    except Exception as e:
+                        log.exception("ref_code apply")
+                        msg = f"❌ خطا در ثبت کد دعوت: {e}"
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "statement":
@@ -1117,8 +1122,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
 
             # ---- main menu ----
-            if text in ("/start", "شروع", "منو", "menu"):
-                _pending.pop(pid, None)
+            if text in ("/start", "شروع", "منو", "menu") or text.startswith("/start"):
                 try:
                     await game.record_start(pid)
                 except Exception:
@@ -1126,8 +1130,32 @@ def register_handlers(bot, app_ctx: dict):
                 start_msg = await game.get_setting("start_message", game.DEFAULT_START)
                 nav_home(pid)
                 await reply(message, start_msg, main_kb(owner))
+                # deep-link referral: /start WW123456
+                payload = ""
+                if text.startswith("/start"):
+                    parts = text.split(maxsplit=1)
+                    if len(parts) > 1:
+                        payload = parts[1].strip()
+                if payload:
+                    try:
+                        ref_msg = await game.apply_referral_code(pid, payload)
+                        await reply(message, ref_msg, main_kb(owner))
+                    except GameError as e:
+                        err = str(e)
+                        if "کشور" in err:
+                            _pending[pid] = {"kind": "ref_code", "preset": payload}
+                            await reply(
+                                message,
+                                "🎟 کد دعوت ذخیره شد.\n"
+                                "بعد از انتخاب کشور، همین کد خودکار اعمال می‌شود یا دوباره کد را بفرستید.\n"
+                                f"کد: {payload}",
+                                main_kb(owner),
+                            )
+                        else:
+                            await reply(message, f"❌ {e}", main_kb(owner))
+                    except Exception:
+                        log.exception("start referral payload")
                 return
-
 
             if text == BTN_MORE:
                 nav_push(pid, "more")
@@ -2044,6 +2072,20 @@ def register_handlers(bot, app_ctx: dict):
                 try:
                     code_c = (data.split(":")[-1] or "").upper()
                     c = await game.claim(pid, code_c)
+                    # apply saved referral code (from /start deep-link or pending)
+                    try:
+                        st_ref = _pending.get(pid) or {}
+                        preset = st_ref.get("preset") if st_ref.get("kind") == "ref_code" else None
+                        if preset:
+                            try:
+                                ref_msg = await game.apply_referral_code(pid, str(preset))
+                                _pending.pop(pid, None)
+                                await out(ref_msg)
+                            except GameError as e_ref:
+                                await out(f"🎟 کد دعوت: {e_ref}")
+                    except Exception:
+                        log.exception("post-claim referral")
+
                     if str((c or {}).get("country_code") or "").upper() == HACKER_CODE:
                         await out(
                             f"✅ {HACKER_NAME_FA} تحت فرمان شماست.",
@@ -3210,7 +3252,7 @@ def register_handlers(bot, app_ctx: dict):
                 return
             if data == "ng:refenter":
                 _pending[pid] = {"kind": "ref_code"}
-                await out("لطفاً کد دعوت دوستت رو وارد کن:")
+                await out("لطفاً کد دعوت دوستت را وارد کن\nمثال: WW123456\n(هر دو نفر باید کشور داشته باشند)")
                 return
 
             if data == "ng:o:psearch":
