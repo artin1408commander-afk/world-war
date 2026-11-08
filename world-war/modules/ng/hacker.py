@@ -566,3 +566,106 @@ class HackerService:
             (int(nid["id"]), HACKER_CODE, int(pid), body, now.isoformat()),
         )
         return "✅ بیانیه ثبت و برای انتشار در صف همگانی قرار گرفت."
+
+
+    async def admin_profile_text(self) -> str:
+        await self.ensure_tables()
+        g = await self.get_group()
+        c = await self.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (HACKER_CODE,))
+        if not g:
+            owner = (c or {}).get("owner_player_id")
+            return (
+                f"{HACKER_FLAG} {HACKER_NAME_FA}\n\n"
+                f"وضعیت: هنوز انتخاب نشده یا پروفایل ساخته نشده.\n"
+                f"مالک فعلی کشور: {owner or 'آزاد'}\n"
+                f"خزانه: {int(float((c or {}).get('treasury') or 0)):,}"
+            )
+        level = int(g.get("level") or 1)
+        xp = int(g.get("xp") or 0)
+        need = xp_needed_for_level(level)
+        return (
+            f"{HACKER_FLAG} {HACKER_NAME_FA} — مدیریت\n\n"
+            f"مالک: {g.get('owner_player_id')}\n"
+            f"فعال: {'بله' if int(g.get('active') or 0) else 'خیر'}\n"
+            f"لول: {level}\n"
+            f"XP: {xp:,} / {need:,}\n"
+            f"عملیات موفق: {int(g.get('ops_success') or 0)}\n"
+            f"مجموع دزدی: {int(float(g.get('total_stolen') or 0)):,}\n"
+            f"خزانه: {int(float((c or {}).get('treasury') or 0)):,}\n"
+            f"کول‌داون دزدی تا: {g.get('next_steal_at') or '—'}\n"
+            f"کول‌داون بانک تا: {g.get('next_bank_at') or '—'}"
+        )
+
+    async def admin_set_level(self, actor: int, level: int) -> str:
+        if not self.g.is_owner(int(actor)):
+            raise HackerError("فقط مالک")
+        level = max(1, min(50, int(level)))
+        now = datetime.now(timezone.utc).isoformat()
+        g = await self.get_group()
+        if not g:
+            raise HackerError("گروه هنوز ساخته نشده (باید توسط کاربر مجاز انتخاب شود).")
+        await self.db.execute(
+            "UPDATE ng_hacker_groups SET level=$1, updated_at=$2 WHERE country_code=$3",
+            (level, now, HACKER_CODE),
+        )
+        try:
+            await self.g.admin_log(int(actor), "hacker_set_level", f"level={level}")
+        except Exception:
+            pass
+        return f"✅ لول گروه هکری = {level}"
+
+    async def admin_set_xp(self, actor: int, xp: int) -> str:
+        if not self.g.is_owner(int(actor)):
+            raise HackerError("فقط مالک")
+        xp = max(0, int(xp))
+        now = datetime.now(timezone.utc).isoformat()
+        g = await self.get_group()
+        if not g:
+            raise HackerError("گروه هنوز ساخته نشده.")
+        await self.db.execute(
+            "UPDATE ng_hacker_groups SET xp=$1, updated_at=$2 WHERE country_code=$3",
+            (xp, now, HACKER_CODE),
+        )
+        try:
+            await self.g.admin_log(int(actor), "hacker_set_xp", f"xp={xp}")
+        except Exception:
+            pass
+        return f"✅ XP گروه هکری = {xp:,}"
+
+    async def admin_set_treasury(self, actor: int, amount: float) -> str:
+        if not self.g.is_owner(int(actor)):
+            raise HackerError("فقط مالک")
+        amount = max(0.0, float(amount))
+        await self.db.execute(
+            "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
+            (amount, HACKER_CODE),
+        )
+        try:
+            await self.g.admin_log(int(actor), "hacker_set_treasury", f"treasury={amount}")
+        except Exception:
+            pass
+        return f"✅ خزانه آنانیموس = {int(amount):,}"
+
+    async def admin_set_active(self, actor: int, active: bool) -> str:
+        if not self.g.is_owner(int(actor)):
+            raise HackerError("فقط مالک")
+        g = await self.get_group()
+        if not g:
+            raise HackerError("گروه هنوز ساخته نشده.")
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "UPDATE ng_hacker_groups SET active=$1, updated_at=$2 WHERE country_code=$3",
+            (1 if active else 0, now, HACKER_CODE),
+        )
+        return f"✅ گروه هکری {'فعال' if active else 'غیرفعال'} شد"
+
+    async def admin_clear_cooldowns(self, actor: int) -> str:
+        if not self.g.is_owner(int(actor)):
+            raise HackerError("فقط مالک")
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "UPDATE ng_hacker_groups SET next_steal_at=NULL, next_bank_at=NULL, updated_at=$1 WHERE country_code=$2",
+            (now, HACKER_CODE),
+        )
+        return "✅ کول‌داون دزدی و بانک پاک شد"
+

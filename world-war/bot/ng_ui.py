@@ -505,6 +505,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("💰 گرفتن مالیات", "ng:otax"), ("⚖️ محکوم کردن کشور", "ng:ocondemn")],
                     [("❤️ دیدن HP ها", "ng:ohp"), ("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
                     [("🎁 مدیریت لجندری", "ng:oleg"), ("💰 شارژ کیف پول", "ng:owallet")],
+                    [("🎭 گروه هکری آنانیموس", "ng:ohack")],
                     [("💎 حمایت مالی", "ng:odonate")],
                     [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
                     [("🏷 قیمت فروشگاه", "ng:oprices"), ("🏷 تخفیف فروشگاه", "ng:odiscount")],
@@ -1060,6 +1061,33 @@ def register_handlers(bot, app_ctx: dict):
                         log.exception("owner_player_search")
                         await reply(message, f"❌ خطا در جستجو: {e}", ik([cancel_row()]))
                     return
+
+                if kind == "hacker_admin_level":
+                    try:
+                        msg = await game.hacker.admin_set_level(pid, int(text.strip()))
+                        _pending.pop(pid, None)
+                        await reply(message, msg, ik([[("🎭 پنل هکر", "ng:ohack")]]))
+                    except Exception as e:
+                        await reply(message, f"❌ {e}")
+                    return
+                if kind == "hacker_admin_xp":
+                    try:
+                        msg = await game.hacker.admin_set_xp(pid, int(text.strip().replace(",", "")))
+                        _pending.pop(pid, None)
+                        await reply(message, msg, ik([[("🎭 پنل هکر", "ng:ohack")]]))
+                    except Exception as e:
+                        await reply(message, f"❌ {e}")
+                    return
+                if kind == "hacker_admin_treasury":
+                    try:
+                        amt = float(text.strip().replace(",", "").replace("،", ""))
+                        msg = await game.hacker.admin_set_treasury(pid, amt)
+                        _pending.pop(pid, None)
+                        await reply(message, msg, ik([[("🎭 پنل هکر", "ng:ohack")]]))
+                    except Exception as e:
+                        await reply(message, f"❌ {e}")
+                    return
+
                 if kind == "owner_set_hp":
                     try:
                         raw = text.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
@@ -1567,7 +1595,7 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             # owner callbacks — server-side authorization
-            if data.startswith("ng:o") or data.startswith("ng:owar") or data.startswith("ng:onuke") or data.startswith("ng:ostmt") or data.startswith("ng:onpt") or data.startswith("ng:ologs") or data.startswith("ng:ostart") or data.startswith("ng:oabout") or data.startswith("ng:oban") or data.startswith("ng:ounban") or data.startswith("ng:omoney") or data.startswith("ng:oreset") or data.startswith("ng:sapp") or data.startswith("ng:srej") or data.startswith("ng:nptok") or data.startswith("ng:nptno") or data.startswith("ng:logtoggle") or data.startswith("ng:otest") or data.startswith("ng:oforce") or data.startswith("ng:ou") or data.startswith("ng:otax") or data.startswith("ng:ocondemn") or data.startswith("ng:oureset") or data.startswith("ng:oally") or data.startswith("ng:oaway") or data.startswith("ng:orefstats") or data.startswith("ng:odbl") or data.startswith("ng:oudbl") or data.startswith("ng:olaws") or data.startswith("ng:lawok") or data.startswith("ng:lawno") or data.startswith("ng:oprice") or data.startswith("ng:odisc") or data.startswith("ng:ogiveall") or data.startswith("ng:odaily") or data.startswith("ng:ohp") or data.startswith("ng:osethp") or data.startswith("ng:oleg") or data.startswith("ng:owallet") or data.startswith("ng:olegprices") or data.startswith("ng:odonate") or data.startswith("ng:donrev"):
+            if data.startswith("ng:dcd") or data.startswith("ng:orec") or data.startswith("ng:o") or data.startswith("ng:owar") or data.startswith("ng:onuke") or data.startswith("ng:ostmt") or data.startswith("ng:onpt") or data.startswith("ng:ologs") or data.startswith("ng:ostart") or data.startswith("ng:oabout") or data.startswith("ng:oban") or data.startswith("ng:ounban") or data.startswith("ng:omoney") or data.startswith("ng:oreset") or data.startswith("ng:sapp") or data.startswith("ng:srej") or data.startswith("ng:nptok") or data.startswith("ng:nptno") or data.startswith("ng:logtoggle") or data.startswith("ng:otest") or data.startswith("ng:oforce") or data.startswith("ng:ou") or data.startswith("ng:otax") or data.startswith("ng:ocondemn") or data.startswith("ng:oureset") or data.startswith("ng:oally") or data.startswith("ng:oaway") or data.startswith("ng:orefstats") or data.startswith("ng:odbl") or data.startswith("ng:oudbl") or data.startswith("ng:olaws") or data.startswith("ng:lawok") or data.startswith("ng:lawno") or data.startswith("ng:oprice") or data.startswith("ng:odisc") or data.startswith("ng:ogiveall") or data.startswith("ng:odaily") or data.startswith("ng:ohp") or data.startswith("ng:osethp") or data.startswith("ng:oleg") or data.startswith("ng:owallet") or data.startswith("ng:olegprices") or data.startswith("ng:odonate") or data.startswith("ng:donrev"):
                 if not owner:
                     await out("❌ دسترسی مجاز نیست.")
                     return
@@ -3158,6 +3186,10 @@ def register_handlers(bot, app_ctx: dict):
                 await out("لطفاً کد دعوت دوستت رو وارد کن:")
                 return
 
+            if data == "ng:o:psearch":
+                _pending[pid] = {"kind": "owner_player_search"}
+                await out("آیدی عددی، @یوزرنیم یا بخشی از نام را بفرستید:", ik([cancel_row()]))
+                return
             if data == "ng:o:players" or data.startswith("ng:o:players:"):
                 page = 0
                 if data.startswith("ng:o:players:"):
@@ -3894,7 +3926,10 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 p = await game.db.fetchrow("SELECT country_code FROM ng_players WHERE player_id=$1", (tid,))
                 code = (p or {}).get("country_code") or ""
-                rows = [
+                extra_hack = []
+                if str(code).upper() == "ANON":
+                    extra_hack = [[("🎭 مدیریت گروه هکری", "ng:ohack")]]
+                rows = extra_hack + [
                     [("🚫 بن", f"ng:ouban:{tid}"), ("✅ آن‌بن", f"ng:ouunban:{tid}")],
                     [("📦 دارایی‌ها", f"ng:ouinv:{tid}"), ("💰 پول", f"ng:oum:{tid}")],
                     [("NPT وضعیت", f"ng:ounpt:{tid}")],
@@ -4136,6 +4171,54 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ {e}")
                 return
 
+
+
+            if data == "ng:ohack" or data == "ng:ohack:menu":
+                try:
+                    txt = await game.hacker.admin_profile_text()
+                except Exception as e:
+                    log.exception("ohack profile")
+                    txt = f"❌ {e}"
+                rows = [
+                    [("🔄 تازه‌سازی", "ng:ohack")],
+                    [("⬆️ تنظیم لول", "ng:ohack:level"), ("⭐ تنظیم XP", "ng:ohack:xp")],
+                    [("💰 تنظیم خزانه", "ng:ohack:treasury")],
+                    [("🟢 فعال", "ng:ohack:on"), ("🔴 غیرفعال", "ng:ohack:off")],
+                    [("⏱ پاک‌کردن کول‌داون", "ng:ohack:cd")],
+                    [("⬅️ پنل مالک", "ng:home")],
+                ]
+                await out(txt, ik(rows))
+                return
+            if data == "ng:ohack:level":
+                _pending[pid] = {"kind": "hacker_admin_level"}
+                await out("عدد لول جدید را بفرستید (۱ تا ۵۰):", ik([cancel_row()]))
+                return
+            if data == "ng:ohack:xp":
+                _pending[pid] = {"kind": "hacker_admin_xp"}
+                await out("مقدار XP را بفرستید:", ik([cancel_row()]))
+                return
+            if data == "ng:ohack:treasury":
+                _pending[pid] = {"kind": "hacker_admin_treasury"}
+                await out("مبلغ خزانه جدید گروه هکری را بفرستید:", ik([cancel_row()]))
+                return
+            if data == "ng:ohack:on":
+                try:
+                    await out(await game.hacker.admin_set_active(pid, True), ik([[("🎭 بازگشت", "ng:ohack")]]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:ohack:off":
+                try:
+                    await out(await game.hacker.admin_set_active(pid, False), ik([[("🎭 بازگشت", "ng:ohack")]]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:ohack:cd":
+                try:
+                    await out(await game.hacker.admin_clear_cooldowns(pid), ik([[("🎭 بازگشت", "ng:ohack")]]))
+                except Exception as e:
+                    await out(f"❌ {e}")
+                return
 
             # ---- Anonymous Hacker Group ----
             if data in ("ng:hack:menu", "ng:hack:home"):
