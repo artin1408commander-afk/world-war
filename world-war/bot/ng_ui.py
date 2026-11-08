@@ -45,6 +45,7 @@ BTN_TREATY = "⚖ پیمان‌ها"
 BTN_WALLET = "💰 کیف پول"
 BTN_DONATE = "💎 حمایت مالی"
 BTN_MORE = "📂 منوی بیشتر"
+BTN_NPT = "☢ پیمان NPT"
 
 _pending: dict[int, dict] = {}
 
@@ -71,15 +72,16 @@ def nav_back(pid: int) -> str | None:
     return st[-1] if st else None
 
 
-def main_kb(is_owner: bool = False) -> MenuKeyboardMarkup:
+def main_kb(is_owner: bool = False, has_country: bool = False) -> MenuKeyboardMarkup:
     """Compact main menu — essentials first; secondary in «منوی بیشتر»."""
     kb = MenuKeyboardMarkup()
     rows = [
         [BTN_GUIDE, BTN_MY],
         [BTN_SHOP, BTN_ATTACK],
         [BTN_ECO, BTN_INV],
-        [BTN_ALLY, BTN_WORLD],
-        [BTN_PICK, BTN_MORE],
+        [BTN_NPT, BTN_ALLY],
+        [BTN_WORLD, BTN_MORE],
+        [BTN_PICK],
     ]
     if is_owner:
         rows.append([BTN_OWNER])
@@ -514,7 +516,7 @@ def register_handlers(bot, app_ctx: dict):
                 ]
                 await reply(message, "🛡 پنل مالک / سازمان ملل\nدستورات: /admin /owner /panel", ik(rows))
                 return
-            if text not in ("/start", "شروع", "منو", "menu") and text not in (BTN_ABOUT, BTN_GUIDE, BTN_REF):
+            if text not in ("/start", "شروع", "منو", "menu") and text not in (BTN_ABOUT, BTN_GUIDE, BTN_REF, BTN_NPT):
                 if not await require_membership(pid, message, False):
                     return
             owner = game.is_owner(pid)
@@ -1157,7 +1159,33 @@ def register_handlers(bot, app_ctx: dict):
                         log.exception("start referral payload")
                 return
 
+            if text == BTN_NPT:
+                if not code:
+                    await reply(message, "برای درخواست NPT ابتدا باید کشور داشته باشید.", main_kb(owner, False))
+                    return
+                if await game.is_group(code):
+                    await reply(message, "گروهک‌ها امکان عضویت در NPT ندارند.", main_kb(owner, True))
+                    return
+                c = await game.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (code,))
+                st = "عضو NPT" if c and int(c.get("npt_member") or 0) == 1 else "غیرعضو NPT"
+                cname = (c or {}).get("name_fa") or code
+                rows = [
+                    [("✅ درخواست عضویت در NPT", "ng:npt:join")],
+                    [("🚪 درخواست خروج از NPT", "ng:npt:leave")],
+                    [("⬅️ بازگشت", "ng:home")],
+                ]
+                await reply(
+                    message,
+                    f"☢ پیمان منع گسترش سلاح‌های هسته‌ای (NPT)\n"
+                    f"کشور: {cname}\n"
+                    f"وضعیت فعلی: {st}\n\n"
+                    f"درخواست شما برای مالک ارسال می‌شود و پس از تأیید/رد، در گروه و پیوی اطلاع داده می‌شود.",
+                    ik(rows),
+                )
+                return
+
             if text == BTN_MORE:
+
                 nav_push(pid, "more")
                 await reply(message, more_menu_text(), ik(more_menu_rows()))
                 return

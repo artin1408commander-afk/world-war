@@ -4013,13 +4013,35 @@ class Game:
             (rid, code, pid, request_type, now),
         )
         label = "عضویت در NPT" if request_type == "join" else "خروج از NPT"
+        cname = c.get("name_fa") or code
         body = (
-            f"کشور {c['name_fa']} درخواست {label} را ارسال کرده است.\n\n"
-            f"شناسه بازیکن: {pid}\nزمان: {now}"
+            f"☢ درخواست {label}\n"
+            f"کشور: {cname}\n"
+            f"بازیکن: {pid}\n"
+            f"شناسه درخواست: #{rid}\n"
+            f"زمان: {now}"
         )
-        await self._owner_inbox("npt", rid, f"درخواست NPT — {c['name_fa']}", body)
+        await self._owner_inbox("npt", rid, f"درخواست NPT — {cname}", body)
         await self.log_activity("npt", f"درخواست {label}", code, pid)
-        return f"✅ درخواست «{label}» برای بررسی مالک ارسال شد."
+        # group + owner PVs
+        await self.broadcast_log("admin", f"☢ {cname} درخواست «{label}» ثبت کرد (#{rid}).")
+        try:
+            owners = await self.all_owner_ids()
+        except Exception:
+            owners = [self.owner_id] if self.owner_id else []
+        for oid in owners:
+            if not oid:
+                continue
+            try:
+                await self.log_activity(
+                    "dm_notice",
+                    f"{body}\n\nاز پنل مالک → درخواست‌های NPT بررسی کنید.\nتأیید: ng:nptok:{rid} | رد: ng:nptno:{rid}",
+                    code,
+                    int(oid),
+                )
+            except Exception:
+                log.exception("npt owner dm %s", oid)
+        return f"✅ درخواست «{label}» ثبت شد و برای مالک ارسال گردید."
 
     async def review_npt(self, request_id: int, approve: bool, actor: int) -> str:
         if not self.is_owner(actor):
@@ -4043,12 +4065,31 @@ class Game:
                     (new_val, r["country_code"]),
                 )
         label = "عضویت" if r["request_type"] == "join" else "خروج"
+        cname = await self.country_name_only(r["country_code"])
+        target_pid = int(r.get("player_id") or 0)
         if approve:
             await self.log_activity("npt", f"تأیید {label} NPT", r["country_code"], actor)
             await self.admin_log(actor, "npt_approve", f"{r['country_code']} {label}")
-            await self.broadcast_log("admin", f"⚖ وضعیت NPT کشور {r['country_code']} تغییر کرد ({label}).")
-            return f"✅ درخواست {label} NPT برای {r['country_code']} تأیید شد."
+            msg_g = f"✅ درخواست {label} NPT کشور «{cname}» تأیید شد."
+            await self.broadcast_log("admin", msg_g)
+            if target_pid:
+                await self.log_activity(
+                    "dm_notice",
+                    f"✅ درخواست {label} NPT شما برای «{cname}» تأیید شد.",
+                    r["country_code"],
+                    target_pid,
+                )
+            return f"✅ درخواست {label} NPT برای {cname} تأیید شد."
         await self.admin_log(actor, "npt_reject", f"{r['country_code']} {label}")
+        msg_g = f"❌ درخواست {label} NPT کشور «{cname}» رد شد."
+        await self.broadcast_log("admin", msg_g)
+        if target_pid:
+            await self.log_activity(
+                "dm_notice",
+                f"❌ درخواست {label} NPT شما برای «{cname}» رد شد.",
+                r["country_code"],
+                target_pid,
+            )
         return f"درخواست {label} NPT رد شد. وضعیت قبلی حفظ شد."
 
     async def _owner_inbox(self, kind: str, ref_id: int, title: str, body: str) -> None:
