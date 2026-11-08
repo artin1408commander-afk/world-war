@@ -15,10 +15,12 @@ BOT_NAME = "WORLD WAR"
 SUPPORT_USERNAME = ""
 MAIN_GROUP = "@warworld3"
 
-# --- Database ---
-# sqlite | postgres  (empty + DATABASE_URL → postgres automatically)
-DATABASE_MODE = "sqlite"
-DATABASE_URL = ""
+# --- Database (PostgreSQL ONLY — Railway) ---
+# Runtime never uses SQLite. DATABASE_URL is required.
+# Prefer setting DATABASE_URL in Railway environment variables.
+DATABASE_MODE = "postgres"
+DATABASE_URL = ""  # e.g. postgresql://user:pass@host:5432/railway
+# SQLITE_PATH is ignored at runtime (offline migration tools only)
 SQLITE_PATH = ""
 
 # Discrete Postgres parts (used only if DATABASE_URL is empty)

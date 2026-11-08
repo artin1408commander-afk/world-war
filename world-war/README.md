@@ -1,5 +1,15 @@
 # WORLD WAR
 
+## Database policy (mandatory)
+
+**Railway PostgreSQL is the only permanent data store at runtime.**
+
+- `DATABASE_URL` is required (environment variable preferred).
+- SQLite is **not** used when the bot runs.
+- There is **no** automatic fallback to local files or JSON.
+- Offline migration helper: `tools/migrate_sqlite_to_postgres.py`
+
+
 **Repository (canonical):** https://github.com/artin1408commander-afk/world-war
 
 Application root inside the repo: **`world-war/`**
@@ -76,17 +86,18 @@ Multiplayer geopolitical & country-management simulation bot for **Bale**.
 
 ## Setup
 
-### Pydroid3 / local SQLite
+### Local / Termux (still needs PostgreSQL URL)
 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
 # BALE_TOKEN=...
-# DATABASE_MODE=sqlite
+# DATABASE_MODE=postgres
+# DATABASE_URL=postgresql://...
 python main.py
 ```
 
-Creates `db/world_war.db` automatically.
+Requires `DATABASE_URL` pointing at PostgreSQL (no local SQLite runtime).
 
 ### Railway + PostgreSQL
 

@@ -236,7 +236,8 @@ class Settings:
 
     @property
     def is_sqlite(self) -> bool:
-        return self.database_mode == "sqlite"
+        # Runtime never uses SQLite
+        return False
 
     def is_admin(self, pid: int) -> bool:
         try:
@@ -275,23 +276,28 @@ def load_settings() -> Settings:
             except ValueError as exc:
                 raise ValueError(f"Invalid ADMIN_IDS entry: {part!r}") from exc
 
-    # Database URL / mode
+    # Database: PostgreSQL ONLY (Railway). No SQLite runtime fallback.
     db_url = _get(local, "DATABASE_URL", "")
     if not db_url:
         db_url = _build_database_url_from_parts(local)
 
-    mode = _get(local, "DATABASE_MODE", "").lower()
-    if not mode:
-        mode = "postgres" if db_url else "sqlite"
-    if mode not in ("postgres", "sqlite"):
-        raise ValueError(f"Invalid DATABASE_MODE={mode!r}. Use 'postgres' or 'sqlite'.")
-    if mode == "postgres" and not db_url:
+    mode_raw = _get(local, "DATABASE_MODE", "").lower().strip()
+    if mode_raw and mode_raw not in ("postgres", "postgresql", "pg"):
         raise ValueError(
-            "DATABASE_MODE=postgres requires DATABASE_URL or POSTGRES_HOST(+user/db/password). "
-            "Refusing to fall back to SQLite."
+            f"DATABASE_MODE={mode_raw!r} is not supported. "
+            "WORLD WAR runtime uses PostgreSQL only. "
+            "Set DATABASE_URL (Railway) and omit SQLITE mode."
+        )
+    mode = "postgres"
+    if not db_url:
+        raise ValueError(
+            "DATABASE_URL is required. Railway PostgreSQL is the only permanent data store. "
+            "Set DATABASE_URL in environment variables (preferred) or gitignored config.py. "
+            "SQLite/local files are not used at runtime."
         )
 
-    sqlite_path = _resolve_sqlite_path(_get(local, "SQLITE_PATH", ""))
+    # SQLITE_PATH is ignored at runtime (offline migration tools only)
+    sqlite_path = Path(_get(local, "SQLITE_PATH", "") or "") if _get(local, "SQLITE_PATH", "") else Path("")
 
     return Settings(
         bale_token=token,
