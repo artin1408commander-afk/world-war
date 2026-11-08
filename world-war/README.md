@@ -1,3 +1,26 @@
+# WORLD WAR
+
+**Repository (canonical):** https://github.com/artin1408commander-afk/world-war
+
+Application root inside the repo: **`world-war/`**
+
+| محیط | مسیر |
+|------|------|
+| GitHub | `artin1408commander-afk/world-war` |
+| کد بازی | `world-war/` (Root Directory در Railway) |
+| SQLite روی اندروید | `/storage/emulated/0/worldwarbot/DB/world_war.db` |
+| PostgreSQL | فقط با `DATABASE_URL` روی Railway |
+
+```bash
+git clone https://github.com/artin1408commander-afk/world-war.git
+cd world-war/world-war
+cp config.example.py config.py
+pip install -r requirements.txt
+python main.py
+```
+
+---
+
 # WORLD WAR — Railway deployment
 
 ## Root Directory
