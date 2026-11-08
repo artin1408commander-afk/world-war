@@ -17,11 +17,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("worldwar")
 
+# Fallback only; runtime uses settings.main_group
+MAIN_GROUP = "@warworld3"
+
 # quiet noisy libraries
 for name in ("httpx", "httpcore", "asyncio", "bale", "aiohttp"):
     logging.getLogger(name).setLevel(logging.WARNING)
-
-MAIN_GROUP = "@warworld3"
 
 
 async def queue_nightly_if_needed(game: Game):
@@ -127,16 +128,16 @@ async def group_log_loop(game: Game, bot):
                 try:
                     msg = None
                     if hasattr(bot, "send_message"):
-                        msg = await bot.send_message(MAIN_GROUP, text[:3500])
+                        msg = await bot.send_message(game.group_id or MAIN_GROUP, text[:3500])
                     # Pin UN statements
                     if kind in ("group_pin_statement", "nightly_report", "group_pin") and msg is not None:
                         mid = getattr(msg, "message_id", None) or getattr(msg, "id", None)
                         if mid is not None:
                             pinned = False
                             for method, args in (
-                                ("pin_chat_message", (MAIN_GROUP, mid)),
-                                ("pin_message", (MAIN_GROUP, mid)),
-                                ("pin_chat_message", (MAIN_GROUP, mid, True)),
+                                ("pin_chat_message", (game.group_id or MAIN_GROUP, mid)),
+                                ("pin_message", (game.group_id or MAIN_GROUP, mid)),
+                                ("pin_chat_message", (game.group_id or MAIN_GROUP, mid, True)),
                             ):
                                 if hasattr(bot, method):
                                     try:
@@ -212,11 +213,14 @@ async def async_main() -> None:
     log.info("DATABASE_MODE=%s", settings.database_mode)
     if settings.is_sqlite:
         log.info("SQLite file: %s", settings.sqlite_path)
+    else:
+        log.info("PostgreSQL mode (credentials not logged)")
 
     try:
         if not await db.health_check():
             raise RuntimeError("DB health failed")
-        game = Game(db, owner_id=settings.owner_id, group_id=MAIN_GROUP)
+        game = Game(db, owner_id=settings.owner_id, group_id=settings.main_group)
+        game.apply_settings(settings)
         await game.bootstrap()
         log.info(
             "New Generation world ready owner_id=%s mode=%s",

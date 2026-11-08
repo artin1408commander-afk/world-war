@@ -112,3 +112,12 @@ Never log the bot token.
 - گروه لاگ هدف: `@warworld3` (نیازمند عضویت ربات)
 
 `config.py` محلی (gitignore) یا env: `BALE_TOKEN`, `OWNER_ID`, `DATABASE_MODE`, `DATABASE_URL`
+
+
+## Complete configuration
+
+All runtime options live in:
+- `config/settings.py` (loader)
+- `config.example.py` / `.env.example` (documented names)
+
+Environment variables override `config.py`. See `.env.example` for the full list including economy, alliances, donations, and PostgreSQL pool settings.

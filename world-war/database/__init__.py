@@ -9,7 +9,13 @@ from config.settings import Settings
 
 async def create_database(settings: Settings) -> Database:
     if settings.is_postgres:
-        db: Database = PostgresDatabase(settings.database_url)
+        db: Database = PostgresDatabase(
+            settings.database_url,
+            min_size=settings.database_pool_min_size,
+            max_size=settings.database_pool_max_size,
+            command_timeout=settings.database_command_timeout,
+            connect_timeout=settings.database_connect_timeout,
+        )
     elif settings.is_sqlite:
         db = SQLiteDatabase(settings.sqlite_path)
     else:

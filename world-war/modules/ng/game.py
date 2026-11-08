@@ -262,6 +262,53 @@ class Game:
         except Exception:
             log.exception("ensure ng_extra_owners")
 
+
+    def apply_settings(self, settings) -> None:
+        """Apply centralized Settings (recovered defaults) onto live Game attributes."""
+        self.settings = settings
+        if getattr(settings, "main_group", None):
+            self.group_id = settings.main_group
+        self.ATTACK_COOLDOWN_SEC = int(settings.attack_cooldown_sec)
+        self.CYBER_HACK_COOLDOWN_SEC = int(settings.cyber_hack_cooldown_sec)
+        self.REF_INVITEE_REWARD = float(settings.ref_invitee_reward)
+        self.REF_REFERRER_REWARD = float(settings.ref_referrer_reward)
+        self.MAX_LOOT_ABS = float(settings.max_loot_abs)
+        self.BOMB_MONEY_COST = float(settings.bomb_money_cost)
+        self.WS_UPGRADE_BASE = float(settings.ws_upgrade_base)
+        self.WS_URANIUM_BASE_COST = float(settings.ws_uranium_base_cost)
+        self.WS_URANIUM_BASE_AMOUNT = float(settings.ws_uranium_base_amount)
+        self.WS_URANIUM_BASE_MINUTES = float(settings.ws_uranium_base_minutes)
+        self.WS_RESEARCH_BASE_COST = float(settings.ws_research_base_cost)
+        self.WS_RESEARCH_BASE_POINTS = float(settings.ws_research_base_points)
+        self.WS_RESEARCH_BASE_MINUTES = float(settings.ws_research_base_minutes)
+        self.daily_income_base = float(settings.daily_income_base)
+        self.un_starting_treasury = float(settings.un_starting_treasury)
+        # alliances module-level tunables
+        try:
+            import modules.ng.alliances as al
+            al.BASE_CREATE_COST = int(settings.alliance_base_create_cost)
+            al.COST_PER_EXTRA_MEMBER = int(settings.alliance_cost_per_extra_member)
+            al.COST_PER_100M_TREASURY = int(settings.alliance_cost_per_100m_treasury)
+            al.BASE_MEMBER_SLOTS = int(settings.alliance_base_member_slots)
+            al.BASE_TREASURY_CAP = float(settings.alliance_base_treasury_cap)
+            al.MIN_MEMBERS = int(settings.alliance_min_members)
+            al.MAX_MEMBERS = int(settings.alliance_max_members)
+            al.MIN_TREASURY_CAP = float(settings.alliance_min_treasury_cap)
+            al.MAX_TREASURY_CAP = float(settings.alliance_max_treasury_cap)
+            al.MAX_CREATE_COST = int(settings.alliance_max_create_cost)
+            al.RENAME_COST = int(settings.alliance_rename_cost)
+            al.BETRAYAL_WINDOW_SEC = int(settings.alliance_betrayal_window_sec)
+            al.BETRAYAL_PENALTY_SEC = int(settings.alliance_betrayal_penalty_sec)
+            al.DESTROY_WAIT_SEC = int(settings.alliance_destroy_wait_sec)
+        except Exception:
+            log.exception("apply alliance settings")
+        try:
+            import modules.ng.donations as dn
+            dn.MAX_REQUESTS_PER_DAY = int(settings.donation_max_requests_per_day)
+            dn.COOLDOWN_HOURS = int(settings.donation_cooldown_hours)
+        except Exception:
+            log.exception("apply donation settings")
+
     def is_primary_owner(self, pid: int) -> bool:
         """Only config OWNER_ID may manage the co-owner list."""
         return bool(self.owner_id) and int(pid) == int(self.owner_id)
@@ -303,7 +350,7 @@ class Game:
                 (
                     UN_CODE, "سازمان ملل", "United Nations", "🇺🇳", "نیویورک",
                     "دبیرکل سازمان ملل", "دبیرکل", "UND", "واحد سازمان ملل",
-                    self.owner_id, 200_000_000.0, now,
+                    self.owner_id, float(getattr(self, "un_starting_treasury", 200_000_000.0)), now,
                 ),
             )
         else:
@@ -3509,7 +3556,7 @@ class Game:
             law_b = await self.control.law_income_bonus(code)
             sat = float(ctrl["satisfaction"])
         except Exception:
-            base, mod, law_b, sat = 20_000_000.0, 1.0, 0.0, 70.0
+            base, mod, law_b, sat = float(getattr(self, "daily_income_base", 20_000_000.0)), 1.0, 0.0, 70.0
         net = float(c["daily_income"]) - float(c["daily_expense"])
         est = (base + law_b + net) * mod
         title = await self.country_label(code)

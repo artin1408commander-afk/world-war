@@ -18,8 +18,20 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
 class PostgresDatabase(Database):
-    def __init__(self, dsn: str) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        min_size: int = 1,
+        max_size: int = 10,
+        command_timeout: float = 60.0,
+        connect_timeout: float = 30.0,
+    ) -> None:
         self._dsn = dsn
+        self._min_size = max(1, int(min_size))
+        self._max_size = max(self._min_size, int(max_size))
+        self._command_timeout = float(command_timeout)
+        self._connect_timeout = float(connect_timeout)
         self._pool: Optional[asyncpg.Pool] = None
 
     async def connect(self) -> None:
@@ -28,9 +40,10 @@ class PostgresDatabase(Database):
         try:
             self._pool = await asyncpg.create_pool(
                 dsn=self._dsn,
-                min_size=1,
-                max_size=10,
-                command_timeout=60,
+                min_size=self._min_size,
+                max_size=self._max_size,
+                command_timeout=self._command_timeout,
+                timeout=self._connect_timeout,
             )
         except Exception as exc:
             log.exception("PostgreSQL connection failed")
