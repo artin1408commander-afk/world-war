@@ -5768,90 +5768,121 @@ class Game:
         )
 
     async def reset_player(self, actor: int, target_id: int) -> str:
-        """Free player country and progress; keep identity, bans, audit logs."""
+        """Free player country and progress; keep identity, bans, audit logs.
+
+        PostgreSQL-safe: essential ownership changes are in one short transaction.
+        Optional cleanup runs outside that transaction so a missing table/column
+        cannot abort the whole reset with "current transaction is aborted".
+        """
         if not self.is_owner(actor):
             raise GameError("مجاز نیستید")
         if int(target_id) == int(self.owner_id or 0):
             raise GameError("ریست مالک / سازمان ملل مجاز نیست.")
-        if self.is_owner(int(target_id)):
-            raise GameError("ریست مالک‌های سیستم مجاز نیست.")
+        try:
+            if self.is_owner(int(target_id)):
+                raise GameError("ریست مالک‌های سیستم مجاز نیست.")
+        except GameError:
+            raise
+        except Exception:
+            pass
+        target_id = int(target_id)
         p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (target_id,))
         if not p:
             raise GameError("بازیکن یافت نشد")
-        # live ownership beats stale cache
-        code = await self.resolve_country_for_player(int(target_id))
+        code = await self.resolve_country_for_player(target_id)
         if not code:
             code = p.get("country_code")
         if code and str(code).upper() in (str(UN_CODE).upper(), "UN", "UN2", "UN3"):
             raise GameError("کشور سازمان ملل قابل ریست از این مسیر نیست.")
         label = await self.country_label(code) if code else "بدون کشور"
+
+        owned_rows = await self.db.fetch(
+            "SELECT country_code FROM ng_countries WHERE owner_player_id=$1",
+            (target_id,),
+        )
+        codes: list[str] = []
+        for r in owned_rows:
+            cc = str(r.get("country_code") or "").strip()
+            if cc and cc not in codes:
+                codes.append(cc)
+        if code and str(code) not in codes:
+            codes.append(str(code))
+        codes = [c for c in codes if str(c).upper() not in ("UN", "UN2", "UN3", "")]
+
+        # Essential ownership free — only known-safe columns
         async with self.db.transaction() as tx:
-            # free every country owned by this player
-            owned = await tx.fetch(
-                "SELECT country_code FROM ng_countries WHERE owner_player_id=$1",
-                (int(target_id),),
-            )
-            codes = [str(r["country_code"]) for r in owned]
-            if code and code not in codes:
-                codes.append(str(code))
             for cc in codes:
-                if str(cc).upper() in ("UN", "UN2", "UN3"):
-                    continue
                 await tx.execute(
                     """
                     UPDATE ng_countries SET
-                        owner_player_id=NULL, treasury=0, daily_income=0, daily_expense=0,
-                        hp=COALESCE(NULLIF(max_hp,0),1000), is_destroyed=0,
-                        peace_penalty_until=NULL, claimed_at=NULL
+                        owner_player_id=NULL,
+                        treasury=0,
+                        daily_income=0,
+                        daily_expense=0,
+                        hp=1000,
+                        is_destroyed=0,
+                        claimed_at=NULL
                     WHERE country_code=$1
                     """,
                     (cc,),
                 )
-                try:
-                    await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (cc,))
-                    await tx.execute("DELETE FROM ng_buildings WHERE country_code=$1", (cc,))
-                    await tx.execute("DELETE FROM ng_war_state WHERE country_code=$1", (cc,))
-                except Exception:
-                    pass
-            if codes:
-                code = codes[0]
-                await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (code,))
-                await tx.execute("DELETE FROM ng_buildings WHERE country_code=$1", (code,))
-                await tx.execute("DELETE FROM ng_cart WHERE player_id=$1", (target_id,))
-                await tx.execute("DELETE FROM ng_workshop WHERE country_code=$1", (code,))
-                await tx.execute("DELETE FROM ng_workshop_jobs WHERE country_code=$1", (code,))
-                await tx.execute("DELETE FROM ng_war_state WHERE country_code=$1", (code,))
-                try:
-                    await tx.execute(
-                        "UPDATE ng_market SET status='cancelled' WHERE seller_country=$1 AND status='open'",
-                        (code,),
-                    )
-                except Exception:
-                    pass
-                try:
-                    await tx.execute(
-                        "UPDATE ng_peace SET status='expired' WHERE (a_code=$1 OR b_code=$1) AND status IN ('pending','active')",
-                        (code,),
-                    )
-                except Exception:
-                    pass
             await tx.execute(
                 "UPDATE ng_players SET country_code=NULL WHERE player_id=$1",
                 (target_id,),
             )
-        await self.admin_log(actor, "player_reset", f"target={target_id} country={code}")
-        await self.log_activity(
-            "admin",
-            f"ریست کاربر {target_id} — کشور {label} آزاد شد",
-            code,
-            actor,
+
+        async def _safe(sql: str, args: tuple = ()) -> None:
+            try:
+                await self.db.execute(sql, args)
+            except Exception:
+                log.debug("reset cleanup skip: %s", sql[:80], exc_info=True)
+
+        for cc in codes:
+            await _safe("DELETE FROM ng_inventory WHERE country_code=$1", (cc,))
+            await _safe("DELETE FROM ng_buildings WHERE country_code=$1", (cc,))
+            await _safe("DELETE FROM ng_war_state WHERE country_code=$1", (cc,))
+            await _safe("DELETE FROM ng_workshop WHERE country_code=$1", (cc,))
+            await _safe("DELETE FROM ng_workshop_jobs WHERE country_code=$1", (cc,))
+            await _safe(
+                "UPDATE ng_market SET status='cancelled' WHERE seller_country=$1 AND status='open'",
+                (cc,),
+            )
+            await _safe(
+                "UPDATE ng_peace SET status='expired' WHERE (a_code=$1 OR b_code=$1) AND status IN ('pending','active')",
+                (cc,),
+            )
+            await _safe(
+                "UPDATE ng_countries SET peace_penalty_until=NULL WHERE country_code=$1",
+                (cc,),
+            )
+        await _safe("DELETE FROM ng_cart WHERE player_id=$1", (target_id,))
+        await _safe(
+            "UPDATE ng_players SET destroy_cooldown_until=NULL WHERE player_id=$1",
+            (target_id,),
         )
-        return (
-            f"✅ کاربر {target_id} ریست شد.\n"
-            f"کشور قبلی: {label}\n"
-            f"اکنون می‌تواند کشور جدید انتخاب کند.\n"
-            "بن بودن او تغییر نکرد. لاگ‌ها حفظ شدند."
-        )
+
+        primary = codes[0] if codes else (code or "")
+        try:
+            await self.admin_log(actor, "player_reset", f"target={target_id} country={primary}")
+        except Exception:
+            log.exception("admin_log reset")
+        try:
+            await self.log_activity(
+                "admin",
+                f"ریست کاربر {target_id} — کشور {label} آزاد شد",
+                primary or None,
+                actor,
+            )
+        except Exception:
+            log.exception("log_activity reset")
+        lines = [
+            f"✅ کاربر {target_id} ریست شد.",
+            f"کشور قبلی: {label}",
+            "اکنون می‌تواند کشور جدید انتخاب کند.",
+            "بن بودن او تغییر نکرد. لاگ‌ها حفظ شدند.",
+        ]
+        return "\n".join(lines)
+
 
 
     # ---------- alliances (active peace) ----------
