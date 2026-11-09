@@ -1714,8 +1714,8 @@ def register_handlers(bot, app_ctx: dict):
             elif data not in (
                 "ng:home", "ng:cancel", "ng:joincheck", "ng:guide",
                 "ng:acreate", "ng:acreateyes",
-            ) and not data.startswith("ng:joinlink") and not data.startswith("ng:guide:") and not data.startswith("ng:a"):
-                # ng:a* alliance flows allowed so user is not stuck mid-create
+            ) and not data.startswith("ng:joinlink") and not data.startswith("ng:guide:") and not data.startswith("ng:a") and not data.startswith("ng:leg"):
+                # ng:a* alliance flows allowed so user is not stuck mid-create; ng:leg* legendary allowed
                 if not await require_membership(pid, cq, True):
                     return
 
@@ -2548,18 +2548,22 @@ def register_handlers(bot, app_ctx: dict):
                         log.exception("cache file_id")
                 return
             if data.startswith("ng:legbuy:"):
-                code_i = data.split(":")[-1]
+                code_i = (data.split(":")[-1] or "").strip()
                 try:
+                    if not code_i:
+                        await out("❌ کد آیتم نامعتبر", force_new=True)
+                        return
                     if await game.legendary.owns_item(pid, code_i):
                         await out(
                             "✔️ این آیتم را قبلاً خریده‌اید و هنوز استفاده باقی دارد."
-                            + "\n"
+                            + chr(10)
                             + "تا تمام شدن استفاده‌ها خرید مجدد ممکن نیست.",
                             ik([
                                 [("🎁 بازگشت به فروشگاه لجندری", "ng:legshop")],
                                 [("🎁 استفاده از آیتم", "ng:leguse")],
                                 back_row(),
                             ]),
+                            force_new=True,
                         )
                         return
                     result = await game.legendary.buy(pid, code_i)
@@ -2570,10 +2574,13 @@ def register_handlers(bot, app_ctx: dict):
                             [("🎁 استفاده از آیتم", "ng:leguse")],
                             back_row(),
                         ]),
+                        force_new=True,
                     )
                 except Exception as e:
-                    await out(f"❌ {e}")
+                    log.exception("legbuy %s", code_i)
+                    await out(f"❌ {e}", ik([[("🎁 فروشگاه لجندری", "ng:legshop")]]), force_new=True)
                 return
+
             if data == "ng:leguse":
                 summary = await game.legendary.inventory_summary(pid)
                 if not summary:
@@ -2680,29 +2687,48 @@ def register_handlers(bot, app_ctx: dict):
                 except Exception as e:
                     block = str(e)
                 defs = await game.legendary.list_defs()
-                rows = [[(f"➕ {d['name_fa']}", f"ng:oleggive:{tid}:{d['item_code']}")] for d in defs[:5]]
-                rows.append([("➖ حذف سماور", f"ng:olegdel:{tid}:leg_samovar")])
+                rows = [[(f"➕ {d['name_fa']}", f"ng:oleggive:{tid}:{d['item_code']}")] for d in defs]
+                for d in defs:
+                    rows.append([(f"➖ حذف {d['name_fa']}", f"ng:olegdel:{tid}:{d['item_code']}")])
                 rows.append([("💰 شارژ کیف پول", f"ng:owalletsel:{tid}")])
                 rows.append([("👤 پروفایل", f"ng:ou:{tid}")])
                 rows.append(back_row())
                 await out(f"بازیکن {tid}\n{block}", ik(rows))
                 return
             if data.startswith("ng:oleggive:"):
-                _, _, tid, ic = data.split(":", 3)
                 try:
-                    msg = await game.legendary.admin_give_item(pid, int(tid), ic, 1)
-                    await out(msg)
+                    parts = data.split(":")
+                    tid = int(parts[2])
+                    ic = ":".join(parts[3:]).strip() if len(parts) > 3 else ""
+                    if not ic:
+                        await out("❌ آیتم نامعتبر", force_new=True)
+                        return
+                    msg = await game.legendary.admin_give_item(pid, tid, ic, 1)
+                    await out(
+                        msg,
+                        ik([
+                            [("➕ دوباره همین آیتم", f"ng:oleggive:{tid}:{ic}")],
+                            [("🎁 مدیریت لجندری این بازیکن", f"ng:olegp:{tid}")],
+                            [("👤 پروفایل", f"ng:ou:{tid}")],
+                        ]),
+                        force_new=True,
+                    )
                 except Exception as e:
-                    await out(f"❌ {e}")
+                    log.exception("oleggive")
+                    await out(f"❌ {e}", force_new=True)
                 return
             if data.startswith("ng:olegdel:"):
-                _, _, tid, ic = data.split(":", 3)
                 try:
-                    msg = await game.legendary.admin_remove_item(pid, int(tid), ic, 1)
-                    await out(msg)
+                    parts = data.split(":")
+                    tid = int(parts[2])
+                    ic = ":".join(parts[3:]).strip() if len(parts) > 3 else ""
+                    msg = await game.legendary.admin_remove_item(pid, tid, ic, 1)
+                    await out(msg, ik([[("🎁 مدیریت لجندری", f"ng:olegp:{tid}")]]), force_new=True)
                 except Exception as e:
-                    await out(f"❌ {e}")
+                    log.exception("olegdel")
+                    await out(f"❌ {e}", force_new=True)
                 return
+
             if data == "ng:owallet" or data.startswith("ng:owallet:"):
                 page = 0
                 if data.startswith("ng:owallet:"):
@@ -4123,6 +4149,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("⏱ رفع محدودیت ۳۰دقیقه", f"ng:dcd:{tid}")],
                     [("♻️ ریکاوری ۳ ساعته", f"ng:orec:{tid}")],
                     [("🪖 تنظیم تجهیزات", f"ng:oueq:{tid}")],
+                    [("🎁 آیتم لجندری", f"ng:olegp:{tid}")],
                     [("♻️ ریست کردن کاربر", f"ng:oureset:{tid}")],
                     [("⬅️ لیست کاربران", "ng:o:players:0")],
                 ]

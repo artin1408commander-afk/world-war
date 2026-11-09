@@ -378,6 +378,8 @@ class LegendaryService:
         return "\n".join(lines)
 
     async def buy(self, pid: int, item_code: str) -> str:
+        pid = int(pid)
+        item_code = str(item_code or "").strip()
         d = await self.get_def(item_code)
         if not d or not int(d.get("active") or 0):
             raise LegendaryError("آیتم در فروشگاه نیست.")
@@ -386,38 +388,48 @@ class LegendaryService:
                 "این آیتم را قبلاً خریده‌اید و هنوز استفاده باقی دارد. "
                 "پس از اتمام استفاده‌ها می‌توانید دوباره بخرید."
             )
+        await self.ensure_wallet(pid)
         price = float(d["price"])
         uses = int(d.get("uses_per_unit") or USES_PER_UNIT)
         now = datetime.now(timezone.utc).isoformat()
-        async with self.db.transaction() as tx:
-            await self._wallet_delta(tx, pid, -price, "purchase", f"buy:{item_code}", pid)
-            nid = await tx.fetchrow(
-                "SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_player_legendary"
-            )
-            await tx.execute(
-                """
-                INSERT INTO ng_player_legendary (id, player_id, item_code, uses_left, acquired_at)
-                VALUES ($1,$2,$3,$4,$5)
-                """,
-                (int(nid["id"]), int(pid), item_code, uses, now),
-            )
-            pid2 = await tx.fetchrow(
-                "SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_legendary_purchase_log"
-            )
-            await tx.execute(
-                """
-                INSERT INTO ng_legendary_purchase_log (id, player_id, item_code, price, uses_granted, created_at)
-                VALUES ($1,$2,$3,$4,$5,$6)
-                """,
-                (int(pid2["id"]), int(pid), item_code, price, uses, now),
-            )
+        try:
+            async with self.db.transaction() as tx:
+                await self._wallet_delta(tx, pid, -price, "purchase", f"buy:{item_code}", pid)
+                nid = await tx.fetchrow(
+                    "SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_player_legendary"
+                )
+                await tx.execute(
+                    """
+                    INSERT INTO ng_player_legendary (id, player_id, item_code, uses_left, acquired_at)
+                    VALUES ($1,$2,$3,$4,$5)
+                    """,
+                    (int(nid["id"]), pid, item_code, uses, now),
+                )
+                try:
+                    pid2 = await tx.fetchrow(
+                        "SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_legendary_purchase_log"
+                    )
+                    await tx.execute(
+                        """
+                        INSERT INTO ng_legendary_purchase_log (id, player_id, item_code, price, uses_granted, created_at)
+                        VALUES ($1,$2,$3,$4,$5,$6)
+                        """,
+                        (int(pid2["id"]), pid, item_code, price, uses, now),
+                    )
+                except Exception:
+                    log.exception("legendary purchase log")
+        except LegendaryError:
+            raise
+        except Exception as e:
+            log.exception("legendary buy failed")
+            raise LegendaryError(f"خرید انجام نشد: {e}") from e
         bal = await self.get_wallet(pid)
-        return (
-            f"✅ خرید موفق: {d['name_fa']}\n"
-            f"استفاده: {uses} بار\n"
-            f"مبلغ: {int(price):,}\n"
-            f"کیف پول باقی‌مانده: {int(bal):,} تومان"
-        )
+        return chr(10).join([
+            f"✅ خرید موفق: {d['name_fa']}",
+            f"استفاده: {uses} بار",
+            f"مبلغ: {int(price):,}",
+            f"کیف پول باقی‌مانده: {int(bal):,} تومان",
+        ])
 
     # ---- inventory ----
     async def inventory(self, pid: int) -> list[dict]:
