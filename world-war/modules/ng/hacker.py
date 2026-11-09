@@ -133,7 +133,7 @@ class HackerService:
                     country_code, name_fa, name_en, flag, capital_fa, leader_fa, leader_title_fa,
                     currency_code, currency_name_fa, npt_member, owner_player_id, treasury, hp, max_hp,
                     daily_income, daily_expense, is_destroyed, claimed_at, entity_type
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,NULL,$10,1000,1000,$11,0,0,NULL,'hacker')
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,NULL,$10,1000,1000,$11,0,0,NULL,'country')
                 """,
                 (
                     HACKER_CODE,
@@ -154,7 +154,7 @@ class HackerService:
                 await self.db.execute(
                     """
                     UPDATE ng_countries
-                    SET entity_type='hacker', npt_member=0, name_fa=$1, flag=$2,
+                    SET entity_type='country', npt_member=0, name_fa=$1, flag=$2,
                         treasury=$3, daily_income=$4, daily_expense=0
                     WHERE country_code=$5
                     """,

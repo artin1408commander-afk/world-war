@@ -609,15 +609,13 @@ class Game:
         if code == UN_CODE:
             raise GameError("کشور سازمان ملل فقط متعلق به مالک بازی است و قابل انتخاب نیست.")
         if code == HACKER_CODE or code == "ANON":
+            # Only the designated player ID may claim ANON (normal country otherwise)
             allowed = False
             try:
                 if int(pid) == int(ALLOWED_OWNER_ID):
                     allowed = True
             except Exception:
                 pass
-            if self.is_owner(int(pid)):
-                allowed = True
-            # already the live owner can re-bind
             try:
                 row = await self.db.fetchrow(
                     "SELECT owner_player_id FROM ng_countries WHERE country_code=$1",
@@ -629,7 +627,7 @@ class Game:
                 pass
             if not allowed:
                 raise GameError(
-                    "گروه هکری آنانیموس فقط برای کاربر مجاز قابل انتخاب است."
+                    "کشور آنانیموس فقط برای بازیکن مجاز قابل انتخاب است."
                 )
         if special.is_personalized_code(code):
             if not special.can_claim_personalized(code, int(pid)):
@@ -718,8 +716,7 @@ class Game:
                 """,
                 (code, pid),
             )
-        if code == HACKER_CODE:
-            await self.hacker.on_claim(pid)
+        # ANON is a normal country; no special on_claim hooks
         await self.log_activity("claim", f"انتخاب کشور {await self.country_name_only(code)}", code, pid)
         return await self.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (code,))
 
@@ -895,18 +892,6 @@ class Game:
         return f"✅ خرید موفق\nمبلغ: {int(total):,}"
 
     async def recalc_income(self, code: str) -> None:
-        # Anonymous: fixed daily income (finite, not building-stack infinite)
-        if str(code or "").upper() in (HACKER_CODE, "ANON"):
-            try:
-                from modules.ng.hacker import ANON_DAILY_INCOME
-                income = float(ANON_DAILY_INCOME)
-            except Exception:
-                income = 50_000_000.0
-            await self.db.execute(
-                "UPDATE ng_countries SET daily_income=$1, daily_expense=$2 WHERE country_code=$3",
-                (income, 0.0, code),
-            )
-            return
         inv = await self.db.fetch(
             "SELECT * FROM ng_inventory WHERE country_code=$1", (code,)
         )
@@ -1039,16 +1024,8 @@ class Game:
                 continue
             if int(c2.get("is_destroyed") or 0) == 1:
                 continue
-            if str(code).upper() in (HACKER_CODE, "ANON"):
-                # Finite fixed daily for Anonymous — not infinite building stacking
-                try:
-                    from modules.ng.hacker import ANON_DAILY_INCOME, ANON_TREASURY_CAP
-                    total = float(ANON_DAILY_INCOME)
-                except Exception:
-                    total = 50_000_000.0
-            else:
-                net_buildings = float(c2.get("daily_income") or 0) - float(c2.get("daily_expense") or 0)
-                total = (base * mod) + max(0.0, law_bonus) + max(0.0, net_buildings)
+            net_buildings = float(c2.get("daily_income") or 0) - float(c2.get("daily_expense") or 0)
+            total = (base * mod) + max(0.0, law_bonus) + max(0.0, net_buildings)
             try:
                 leg_m = await self.legendary.income_multiplier(code)
                 total *= float(leg_m)
@@ -1074,12 +1051,6 @@ class Game:
                     if int(live.get("is_destroyed") or 0) == 1:
                         continue
                     new_t = float(live["treasury"] or 0) + total
-                    if str(code).upper() in (HACKER_CODE, "ANON"):
-                        try:
-                            from modules.ng.hacker import ANON_TREASURY_CAP
-                            new_t = min(new_t, float(ANON_TREASURY_CAP))
-                        except Exception:
-                            new_t = min(new_t, 500_000_000.0)
                     await tx.execute(
                         "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
                         (new_t, code),
@@ -1550,8 +1521,6 @@ class Game:
 
     async def hack_defense(self, attacker: str, target: str, pid: int) -> str:
         await self.ensure_cyber_tables()
-        if (target or "").upper() in (HACKER_CODE, "ANON"):
-            raise GameError("هک پدافند/دارایی روی گروه هکری آنانیموس ممکن نیست.")
         if attacker == target:
             raise GameError("هدف نامعتبر است")
         if target == UN_CODE:
@@ -1626,8 +1595,6 @@ class Game:
 
     async def hack_assets(self, attacker: str, target: str, pid: int) -> str:
         await self.ensure_cyber_tables()
-        if (target or "").upper() in (HACKER_CODE, "ANON"):
-            raise GameError("هک پدافند/دارایی روی گروه هکری آنانیموس ممکن نیست.")
         if attacker == target:
             raise GameError("هدف نامعتبر است")
         if target == UN_CODE:
@@ -1776,7 +1743,7 @@ class Game:
         if self.is_un_country(code):
             return True, ""
         # Anonymous hacker: no attack cooldown / legendary block; still need equipment
-        is_hack = (code or "").upper() in (HACKER_CODE, "ANON")
+        is_hack = False  # ANON is normal country
         if not is_hack:
             try:
                 await self.legendary.assert_can_attack(code)
@@ -2015,8 +1982,6 @@ class Game:
             intercepted = raw_damage * cover
             damage = max(3.0, raw_damage - intercepted)
             # Anonymous hacker defensive edge: 50% incoming combat damage
-            if (defender or "").upper() in (HACKER_CODE, "ANON"):
-                damage = max(1.0, float(damage) * 0.5)
             victory = ap >= dp * 0.85
             atk_label = await self.country_name_only(attacker)
             def_label = await self.country_name_only(defender)
@@ -2081,15 +2046,22 @@ class Game:
 
             # set cooldown
             seq = int((ws or {}).get("attack_seq") or 0) + 1
-            if ws:
+            try:
+                if ws:
+                    await tx.execute(
+                        "UPDATE ng_war_state SET last_attack_at=$1, attack_seq=$2 WHERE country_code=$3",
+                        (now.isoformat(), seq, attacker),
+                    )
+                else:
+                    await tx.execute(
+                        "INSERT INTO ng_war_state (country_code, last_attack_at, attack_seq) VALUES ($1,$2,$3)",
+                        (attacker, now.isoformat(), seq),
+                    )
+            except Exception:
+                # concurrent insert: fall back to update
                 await tx.execute(
                     "UPDATE ng_war_state SET last_attack_at=$1, attack_seq=$2 WHERE country_code=$3",
                     (now.isoformat(), seq, attacker),
-                )
-            else:
-                await tx.execute(
-                    "INSERT INTO ng_war_state (country_code, last_attack_at, attack_seq) VALUES ($1,$2,$3)",
-                    (attacker, now.isoformat(), seq),
                 )
 
             destroyed = new_hp <= 0
@@ -2529,13 +2501,8 @@ class Game:
         return self.is_owner(int(pid))
 
     def is_hacker_force(self, code: str | None, pid: int | None = None) -> bool:
-        """گروه هکری آنانیموس — عملیات نظامی/دزدی بدون محدودیت جنگ بسته."""
-        if (code or "").upper() != HACKER_CODE and (code or "").upper() != "ANON":
-            return False
-        if pid is None:
-            return True
-        return True
-
+        """Deprecated: ANON is a normal country — no special combat privileges."""
+        return False
 
 
     async def ensure_cyber_tables(self) -> None:
@@ -4758,22 +4725,27 @@ class Game:
                 pass
             intercepted = damage * cover
             damage = max(damage * 0.15, damage - intercepted)
-            if (defender or "").upper() in (HACKER_CODE, "ANON"):
-                damage = max(1.0, float(damage) * 0.5)
             new_hp = max(0.0, float(d["hp"]) - damage)
             await tx.execute(
                 "UPDATE ng_countries SET hp=$1 WHERE country_code=$2", (new_hp, defender)
             )
             seq = int((ws or {}).get("attack_seq") or 0) + 1
-            if ws:
+            try:
+                if ws:
+                    await tx.execute(
+                        "UPDATE ng_war_state SET last_attack_at=$1, attack_seq=$2 WHERE country_code=$3",
+                        (now.isoformat(), seq, attacker),
+                    )
+                else:
+                    await tx.execute(
+                        "INSERT INTO ng_war_state (country_code, last_attack_at, attack_seq) VALUES ($1,$2,$3)",
+                        (attacker, now.isoformat(), seq),
+                    )
+            except Exception:
+                # concurrent insert: fall back to update
                 await tx.execute(
                     "UPDATE ng_war_state SET last_attack_at=$1, attack_seq=$2 WHERE country_code=$3",
                     (now.isoformat(), seq, attacker),
-                )
-            else:
-                await tx.execute(
-                    "INSERT INTO ng_war_state (country_code, last_attack_at, attack_seq) VALUES ($1,$2,$3)",
-                    (attacker, now.isoformat(), seq),
                 )
             destroyed = new_hp <= 0
             if destroyed:

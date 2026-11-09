@@ -141,7 +141,6 @@ def more_menu_rows():
         [("📜 بیانیه", "ng:more:stmt"), ("📊 گزارش‌ها", "ng:more:report")],
         [("🎁 دعوت", "ng:more:ref"), ("💎 حمایت مالی", "ng:more:donate")],
         [("پیمان NPT", "ng:more:npt")],
-        [("🎭 عملیات هکری", "ng:hack:menu")],
         [("ℹ️ درباره ما", "ng:more:about")],
         back_row(),
     ]
@@ -551,6 +550,10 @@ def register_handlers(bot, app_ctx: dict):
                 st = _pending[pid]
                 kind = st.get("kind")
                 if kind == "hacker_statement":
+                    _pending.pop(pid, None)
+                    await reply(message, "بیانیه ویژه هکری حذف شده؛ از بیانیه عادی کشور استفاده کنید.", main_kb(owner))
+                    return
+                if False and kind == "hacker_statement_disabled":
                     try:
                         msg = await game.hacker.queue_announcement(pid, text)
                         _pending.pop(pid, None)
@@ -1312,24 +1315,6 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 nav_push(pid, "country")
                 card = await game.country_card(code)
-                if str(code).upper() == HACKER_CODE:
-                    rows = [
-                        [("🏛 کنترل کشور", "ng:ctrl")],
-                        [("📦 انبار", "ng:go:inv"), ("💰 اقتصاد", "ng:go:eco")],
-                        [("🛒 فروشگاه", "ng:shophome"), ("📜 گزارش", "ng:go:rep")],
-                        [("👤 پروفایل هکری", "ng:hack:profile")],
-                        [("💰 دزدی از کشورها", "ng:hack:steal"), ("🏦 دزدی بانک جهانی", "ng:hack:bank")],
-                        [("🌍 دیدن کشورها", "ng:hack:countries"), ("📢 بیانیه هکری", "ng:hack:stmt")],
-                        [("🎭 منوی هکری", "ng:hack:menu")],
-                        back_row(),
-                    ]
-                    note = (
-                        card + chr(10) + chr(10)
-                        + "🛒 خرید دقیقاً مثل بقیه کشورها از «فروشگاه» (سبد + تسویه)." + chr(10)
-                        + "دکمه‌های زیر فقط عملیات ویژه هکری هستند."
-                    )
-                    await reply(message, note, ik(rows))
-                    return
                 rows = [
                     [("🏛 کنترل کشور", "ng:ctrl")],
                     [("✅ عضویت NPT", "ng:npt:join"), ("🚪 خروج NPT", "ng:npt:leave")],
@@ -1494,7 +1479,7 @@ def register_handlers(bot, app_ctx: dict):
                 war_on = bool(meta and int(meta.get("war_enabled") or 0))
                 # سازمان ملل و گروه هکری آنانیموس همیشه منوی نظامی کامل دارند
                 is_un = bool(owner) and str(code).upper() in ("UN", "UN2", "UN3")
-                is_hack = str(code).upper() in (HACKER_CODE, "ANON")
+                is_hack = False  # ANON has no war bypass
                 combat_on = war_on or is_un or is_hack
                 rows = []
                 if combat_on:
@@ -1749,7 +1734,7 @@ def register_handlers(bot, app_ctx: dict):
             elif data not in (
                 "ng:home", "ng:cancel", "ng:joincheck", "ng:guide",
                 "ng:acreate", "ng:acreateyes",
-            ) and not data.startswith("ng:joinlink") and not data.startswith("ng:guide:") and not data.startswith("ng:a") and not data.startswith("ng:leg") and not data.startswith("ng:hack") and not data.startswith("ng:hbuy"):
+            ) and not data.startswith("ng:joinlink") and not data.startswith("ng:guide:") and not data.startswith("ng:a") and not data.startswith("ng:leg"):
                 # alliance + legendary + Anonymous hacker flows must not be blocked mid-menu
                 if not await require_membership(pid, cq, True):
                     return
@@ -2214,25 +2199,8 @@ def register_handlers(bot, app_ctx: dict):
                     except Exception:
                         log.exception("post-claim referral")
 
-                    if str((c or {}).get("country_code") or "").upper() == HACKER_CODE:
-                        card = await game.country_card(c["country_code"])
-                        msg = (
-                            "✅ " + HACKER_NAME_FA + " تحت فرمان شماست." + chr(10) + chr(10)
-                            + card + chr(10) + chr(10)
-                            + "از این به بعد مثل بقیه کشورها از فروشگاه / انبار / اقتصاد استفاده کنید." + chr(10)
-                            + "عملیات ویژه: منوی هکری (دزدی، بانک، پروفایل، بیانیه)."
-                        )
-                        await out(
-                            msg,
-                            ik([
-                                [("🛒 فروشگاه", "ng:shophome"), ("📦 انبار", "ng:go:inv")],
-                                [("👤 پروفایل هکری", "ng:hack:profile")],
-                                [("💰 دزدی", "ng:hack:steal"), ("🏦 بانک جهانی", "ng:hack:bank")],
-                                [("📢 بیانیه", "ng:hack:stmt"), ("🎭 منوی هکری", "ng:hack:menu")],
-                                back_row(),
-                            ]),
-                            force_new=True,
-                        )
+                    if False and str((c or {}).get("country_code") or "").upper() == HACKER_CODE:
+                        pass
                     else:
                         await out("✅ کشور ثبت شد" + chr(10) + chr(10) + await game.country_card(c["country_code"]))
                 except GameError as e:
@@ -3153,7 +3121,7 @@ def register_handlers(bot, app_ctx: dict):
 
             if data == "ng:atkmenu" or data.startswith("ng:atk:") or data.startswith("ng:fight:") or data.startswith("ng:nuke"):
                 is_un = owner and (code or "").upper() in ("UN", "UN2", "UN3")
-                is_hack = (code or "").upper() in (HACKER_CODE, "ANON")
+                is_hack = False
                 meta = await game.db.fetchrow("SELECT war_enabled FROM world_meta WHERE id=1")
                 if not is_un and not is_hack and (not meta or not int(meta.get("war_enabled") or 0)):
                     await out(
@@ -4206,8 +4174,8 @@ def register_handlers(bot, app_ctx: dict):
                 p = await game.db.fetchrow("SELECT country_code FROM ng_players WHERE player_id=$1", (tid,))
                 code = (p or {}).get("country_code") or ""
                 extra_hack = []
-                if str(code).upper() == "ANON":
-                    extra_hack = [[("🎭 مدیریت گروه هکری", "ng:ohack")]]
+                if False:
+                    extra_hack = []
                 rows = extra_hack + [
                     [("🚫 بن", f"ng:ouban:{tid}"), ("✅ آن‌بن", f"ng:ouunban:{tid}")],
                     [("📦 دارایی‌ها", f"ng:ouinv:{tid}"), ("💰 پول", f"ng:oum:{tid}")],
@@ -4513,6 +4481,15 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             # ---- Anonymous Hacker Group ----
+            if data.startswith("ng:hack") or data.startswith("ng:hbuy") or data.startswith("ng:hbuyc") or data.startswith("ng:hbuy5"):
+                await out(
+                    "سیستم ویژه هکری حذف شده است." + chr(10)
+                    + "آنانیموسم مثل بقیه کشورهاست: فروشگاه، حمله، کول‌داون و قوانین جنگ یکسان.",
+                    ik([back_row()]),
+                    force_new=True,
+                )
+                return
+
             if data in ("ng:hack:menu", "ng:hack:home"):
                 await out(
                     "🎭 منوی گروه هکری آنانیموس",
