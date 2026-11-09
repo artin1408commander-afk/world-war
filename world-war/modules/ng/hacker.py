@@ -23,7 +23,7 @@ STEAL_WAIT_MAX_SEC = 0
 STEAL_AMOUNT_MIN = 1_000_000
 STEAL_AMOUNT_MAX = 15_000_000
 STEAL_XP_BASE = 25
-BANK_MIN_LEVEL = 2
+BANK_MIN_LEVEL = 1
 BANK_COOLDOWN_SEC = 0
 BANK_PERCENT_BASE = 0.005  # 0.5% of eligible world treasury pool cap per country share
 LEVEL_UP_BASE_COST = 5_000_000
@@ -578,8 +578,9 @@ class HackerService:
                 raise HackerError("این آیتم در فروشگاه نیست.")
             meta = dict(row)
         cat = str(meta.get("category") or "")
-        if cat not in ("defense", "missile", "nuclear"):
-            raise HackerError("فقط پدافند / موشک / هسته‌ای برای هکر مجاز است.")
+        # ANON can buy combat gear from dedicated shop categories (+ ground/air/sea for attack)
+        if cat not in ("defense", "missile", "nuclear", "ground", "air", "sea", "drone"):
+            raise HackerError(f"این دسته ({cat or 'نامشخص'}) در فروشگاه هکر مجاز نیست.")
         unit = float(meta.get("unit_price") or 0)
         if unit <= 0:
             raise HackerError("قیمت آیتم نامعتبر است.")

@@ -1498,6 +1498,8 @@ class Game:
 
     async def hack_defense(self, attacker: str, target: str, pid: int) -> str:
         await self.ensure_cyber_tables()
+        if (target or "").upper() in (HACKER_CODE, "ANON"):
+            raise GameError("هک پدافند/دارایی روی گروه هکری آنانیموس ممکن نیست.")
         if attacker == target:
             raise GameError("هدف نامعتبر است")
         if target == UN_CODE:
@@ -1572,6 +1574,8 @@ class Game:
 
     async def hack_assets(self, attacker: str, target: str, pid: int) -> str:
         await self.ensure_cyber_tables()
+        if (target or "").upper() in (HACKER_CODE, "ANON"):
+            raise GameError("هک پدافند/دارایی روی گروه هکری آنانیموس ممکن نیست.")
         if attacker == target:
             raise GameError("هدف نامعتبر است")
         if target == UN_CODE:
@@ -1731,9 +1735,11 @@ class Game:
         for k in kinds:
             pwr, _ = await self.available_force(code, k)
             any_power += pwr
+        if is_hack:
+            return True, ""
         if any_power <= 0:
             return False, "نیروی نظامی قابل‌استفاده ندارید. ابتدا از فروشگاه هکر/عادی تجهیز بخرید."
-        if is_hack or await self.is_test_active_for_country(code):
+        if await self.is_test_active_for_country(code):
             return True, ""
         ws = await self.db.fetchrow("SELECT * FROM ng_war_state WHERE country_code=$1", (code,) )
         if ws and ws.get("last_attack_at"):
@@ -1845,13 +1851,13 @@ class Game:
                 units.append((ic, q, eng, ctype))
 
             combat_units = [u for u in units if u[3] != "specialist"]
-            if (not combat_units or total_power <= 0) and un_atk:
-                # سازمان ملل بدون نیاز به موجودی نیرو حمله می‌کند
+            if (not combat_units or total_power <= 0) and (un_atk or hack_atk):
+                # سازمان ملل / آنانیموس بدون موجودی هم می‌توانند فشار پایه وارد کنند
                 total_power = 5000.0 * (percent / 100.0)
                 combat_units = []  # no inventory consumption
-            if not combat_units and not un_atk:
+            if not combat_units and not un_atk and not hack_atk:
                 raise GameError("نیروی نظامی قابل‌استفاده برای این نوع حمله ندارید.")
-            if total_power <= 0 and not un_atk:
+            if total_power <= 0 and not un_atk and not hack_atk:
                 raise GameError("نیروی نظامی قابل‌استفاده برای این نوع حمله ندارید.")
 
             engaged_power = total_power
@@ -1956,6 +1962,9 @@ class Game:
             raw_damage = float(damage)
             intercepted = raw_damage * cover
             damage = max(3.0, raw_damage - intercepted)
+            # Anonymous hacker defensive edge: 50% incoming combat damage
+            if (defender or "").upper() in (HACKER_CODE, "ANON"):
+                damage = max(1.0, float(damage) * 0.5)
             victory = ap >= dp * 0.85
             atk_label = await self.country_name_only(attacker)
             def_label = await self.country_name_only(defender)
@@ -4678,6 +4687,8 @@ class Game:
                 pass
             intercepted = damage * cover
             damage = max(damage * 0.15, damage - intercepted)
+            if (defender or "").upper() in (HACKER_CODE, "ANON"):
+                damage = max(1.0, float(damage) * 0.5)
             new_hp = max(0.0, float(d["hp"]) - damage)
             await tx.execute(
                 "UPDATE ng_countries SET hp=$1 WHERE country_code=$2", (new_hp, defender)

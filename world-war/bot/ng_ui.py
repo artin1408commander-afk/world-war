@@ -48,6 +48,7 @@ BTN_MORE = "📂 منوی بیشتر"
 BTN_NPT = "پیمان NPT"
 
 _pending: dict[int, dict] = {}
+_hacker_shop_cache: dict[int, list] = {}  # pid -> list of item_code for indexed buy
 
 
 _nav_stack: dict[int, list[str]] = {}
@@ -4436,26 +4437,6 @@ def register_handlers(bot, app_ctx: dict):
                     log.exception("hacker steal")
                     await out(f"❌ {e}", force_new=True)
                 return
-            if data == "ng:hack:bank":
-                try:
-                    txt = await game.hacker.bank_info(pid)
-                    g = await game.hacker.get_group()
-                    level = int((g or {}).get("level") or 1)
-                    if level >= 2:
-                        rows = [[("✅ اجرای دزدی بانک", "ng:hack:bankgo")], [("🔙 بازگشت", "ng:hack:menu")]]
-                    else:
-                        rows = [[("متوجه شدم", "ng:hack:menu")]]
-                    await out(txt, ik(rows))
-                except Exception as e:
-                    await out(f"❌ {e}")
-                return
-            if data == "ng:hack:bankgo":
-                try:
-                    msg = await game.hacker.bank_heist(pid)
-                    await out(msg, ik([[("🔙 منوی هکر", "ng:hack:menu")]]))
-                except Exception as e:
-                    await out(f"❌ {e}")
-                return
             if data == "ng:hack:countries" or data.startswith("ng:hack:cp:"):
                 page = 0
                 if data.startswith("ng:hack:cp:"):
@@ -4503,26 +4484,29 @@ def register_handlers(bot, app_ctx: dict):
                 try:
                     await game.hacker.assert_owner(pid)
                     rows = [
-                        [("پدافندها", "ng:hack:sc:defense")],
-                        [("موشک‌ها", "ng:hack:sc:missile")],
-                        [("بمب اتم", "ng:hack:sc:nuclear")],
+                        [("🛡 پدافندها", "ng:hack:sc:defense")],
+                        [("🚀 موشک‌ها", "ng:hack:sc:missile")],
+                        [("☢ بمب اتم / هسته‌ای", "ng:hack:sc:nuclear")],
+                        [("🪖 زمینی", "ng:hack:sc:ground"), ("✈️ هوایی", "ng:hack:sc:air")],
                         [("🔙 بازگشت", "ng:hack:menu")],
                     ]
-                    await out("🚀 فروشگاه اختصاصی — فقط سه دسته:", ik(rows))
+                    await out("🚀 فروشگاه گروه هکری\nیک دسته را انتخاب کنید:", ik(rows), force_new=True)
                 except Exception as e:
-                    await out(f"❌ {e}")
+                    log.exception("hack shop")
+                    await out(f"❌ {e}", force_new=True)
                 return
+
             if data.startswith("ng:hack:sc:"):
                 cat = data.split(":")[-1]
-                if cat not in ("defense", "missile", "nuclear"):
-                    await out("دسته غیرمجاز")
+                allowed = ("defense", "missile", "nuclear", "ground", "air", "sea")
+                if cat not in allowed:
+                    await out("دسته غیرمجاز", force_new=True)
                     return
                 try:
                     await game.hacker.assert_owner(pid)
                 except Exception as e:
-                    await out(f"❌ {e}")
+                    await out(f"❌ {e}", force_new=True)
                     return
-                # ensure catalog loaded
                 try:
                     await game.ensure_shop_catalog()
                     await game._reload_catalog_prices()
@@ -4530,10 +4514,9 @@ def register_handlers(bot, app_ctx: dict):
                     log.exception("hacker shop catalog reload")
                 items = [
                     it for it in (game._cat or {}).values()
-                    if (it.get("category") or "") == cat
+                    if str(it.get("category") or "") == cat
                 ]
                 if not items:
-                    # fallback: read from DB
                     try:
                         rows_db = await game.db.fetch(
                             "SELECT * FROM ng_shop_catalog WHERE category=$1 ORDER BY unit_price ASC",
@@ -4541,55 +4524,137 @@ def register_handlers(bot, app_ctx: dict):
                         )
                         items = [dict(r) for r in rows_db]
                     except Exception:
+                        log.exception("shop db fetch")
                         items = []
+                # sort by price
+                try:
+                    items = sorted(items, key=lambda x: float(x.get("unit_price") or 0))
+                except Exception:
+                    pass
+                codes = []
                 rows = []
-                for it in items[:25]:
-                    ic = it.get("item_code") or it.get("code")
+                for it in items[:30]:
+                    ic = str(it.get("item_code") or "").strip()
                     if not ic:
                         continue
+                    codes.append(ic)
+                    idx = len(codes) - 1
                     name = it.get("name_fa") or ic
                     price = int(float(it.get("unit_price") or 0))
-                    rows.append([(f"{name} — {price:,}", f"ng:hbuy:{ic}")])
+                    label = f"{name} | {price:,}"
+                    rows.append([(label[:60], f"ng:hbuy:{idx}")])
+                _hacker_shop_cache[int(pid)] = codes
                 if not rows:
-                    await out("در این دسته آیتمی نیست.", ik([[("🔙 بازگشت", "ng:hack:shop")]]))
+                    await out(
+                        f"در دسته «{cat}» آیتمی پیدا نشد.\nاز پنل مالک کاتالوگ را بررسی کنید.",
+                        ik([[("🔙 فروشگاه", "ng:hack:shop")]]),
+                        force_new=True,
+                    )
                     return
-                rows.append([("🛒 سبد", "ng:cart"), ("✅ تسویه", "ng:checkout")])
-                rows.append([("🔙 بازگشت", "ng:hack:shop")])
-                await out(f"🚀 فروشگاه هکر — دسته {cat}:\nروی آیتم بزن تا به سبد اضافه شود.", ik(rows))
+                rows.append([("🔙 فروشگاه", "ng:hack:shop"), ("👤 منو", "ng:hack:menu")])
+                await out(
+                    f"🚀 فروشگاه هکر — {cat}\n"
+                    f"{len(rows)-1} آیتم\n"
+                    f"روی هر آیتم بزن تا همان لحظه خرید شود (مستقیم از خزانه).",
+                    ik(rows),
+                    force_new=True,
+                )
                 return
 
             if data.startswith("ng:hbuy:") or data.startswith("ng:hack:item:") or data.startswith("ng:buy:"):
                 try:
                     await game.hacker.assert_owner(pid)
-                    ic = data.split(":")[-1]
-                    # qty support: ng:hack:item:CODE:5
-                    parts = data.split(":")
+                    raw = data.split(":")[-1]
+                    ic = None
                     qty = 1.0
-                    if len(parts) >= 4 and parts[-1].isdigit():
-                        ic = parts[3] if data.startswith("ng:hack:item:") else parts[2]
-                        try:
-                            qty = float(parts[-1])
-                        except Exception:
-                            qty = 1.0
-                    elif data.startswith("ng:hbuy:") or data.startswith("ng:hack:item:"):
-                        ic = parts[3] if len(parts) > 3 else parts[-1]
+                    # indexed buy: ng:hbuy:3
+                    if data.startswith("ng:hbuy:") and raw.isdigit():
+                        codes = _hacker_shop_cache.get(int(pid)) or []
+                        idx = int(raw)
+                        if 0 <= idx < len(codes):
+                            ic = codes[idx]
+                        else:
+                            await out(
+                                "لیست فروشگاه منقضی شده. دوباره دسته را باز کنید.",
+                                ik([[("🚀 فروشگاه", "ng:hack:shop")]]),
+                                force_new=True,
+                            )
+                            return
                     else:
-                        ic = parts[-1]
+                        parts = data.split(":")
+                        if parts[-1].isdigit() and len(parts) >= 4:
+                            qty = float(parts[-1])
+                            ic = parts[-2]
+                        else:
+                            ic = raw
+                    if not ic:
+                        await out("❌ کد آیتم نامعتبر", force_new=True)
+                        return
                     msg = await game.hacker.buy_item(pid, ic, qty)
                     rows = [
-                        [("＋۱ دوباره", f"ng:hbuy:{ic}")],
-                        [("＋۵", f"ng:hack:item:{ic}:5")],
-                        [("🚀 فروشگاه هکر", "ng:hack:shop"), ("👤 پروفایل", "ng:hack:profile")],
+                        [("＋۱ دوباره", f"ng:hbuy:{raw}" if raw.isdigit() else f"ng:hbuy:0")],
+                        [("🚀 ادامه خرید", "ng:hack:shop"), ("👤 منو هکر", "ng:hack:menu")],
                     ]
+                    # fix +1 for index
+                    if raw.isdigit():
+                        rows[0] = [("＋۱ دوباره", f"ng:hbuy:{raw}"), ("＋۵", f"ng:hbuy5:{raw}")]
                     await out(msg, ik(rows), force_new=True)
                 except (GameError, HackerError) as e:
                     await out(f"❌ {e}", ik([[("🚀 فروشگاه", "ng:hack:shop")]]), force_new=True)
                 except Exception as e:
-                    log.exception("hacker direct buy")
+                    log.exception("hacker buy")
                     await out(f"❌ خطا در خرید: {e}", ik([[("🚀 فروشگاه", "ng:hack:shop")]]), force_new=True)
                 return
 
-            # Fallback: never fail silently
+            if data.startswith("ng:hbuy5:"):
+                try:
+                    await game.hacker.assert_owner(pid)
+                    raw = data.split(":")[-1]
+                    codes = _hacker_shop_cache.get(int(pid)) or []
+                    if not raw.isdigit() or not (0 <= int(raw) < len(codes)):
+                        await out("لیست منقضی — دسته را دوباره باز کنید.", force_new=True)
+                        return
+                    ic = codes[int(raw)]
+                    msg = await game.hacker.buy_item(pid, ic, 5)
+                    await out(msg, ik([[("🚀 فروشگاه", "ng:hack:shop")]]), force_new=True)
+                except Exception as e:
+                    await out(f"❌ {e}", force_new=True)
+                return
+
+            if data == "ng:hack:bank":
+                try:
+                    await game.hacker.assert_owner(pid)
+                    txt = await game.hacker.bank_info(pid)
+                    rows = [
+                        [("✅ اجرای دزدی بانک جهانی", "ng:hack:bankgo")],
+                        [("🔙 بازگشت", "ng:hack:menu")],
+                    ]
+                    await out(txt, ik(rows), force_new=True)
+                except Exception as e:
+                    log.exception("hack bank info")
+                    await out(f"❌ {e}", force_new=True)
+                return
+
+            if data == "ng:hack:bankgo":
+                try:
+                    await game.hacker.assert_owner(pid)
+                    msg = await game.hacker.bank_heist(pid)
+                    await out(
+                        msg,
+                        ik([
+                            [("🏦 دوباره", "ng:hack:bankgo")],
+                            [("🔙 منو هکر", "ng:hack:menu")],
+                        ]),
+                        force_new=True,
+                    )
+                except (HackerError, GameError) as e:
+                    await out(f"❌ {e}", ik([[("🔙 منو", "ng:hack:menu")]]), force_new=True)
+                except Exception as e:
+                    log.exception("hack bankgo")
+                    await out(f"❌ خطا در دزدی بانک: {e}", force_new=True)
+                return
+
+                        # Fallback: never fail silently
             log.warning("unhandled callback data=%s pid=%s", (data or "")[:80], pid)
             try:
                 await out(
