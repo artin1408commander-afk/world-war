@@ -30,6 +30,11 @@ LEVEL_UP_BASE_COST = 5_000_000
 LEVEL_UP_COST_GROWTH = 1.45
 ANNOUNCE_COOLDOWN_SEC = 0
 ANNOUNCE_MAX_LEN = 900
+# Economy defaults for ANON (not infinite)
+ANON_START_TREASURY = 200_000_000.0
+ANON_DAILY_INCOME = 50_000_000.0
+ANON_TREASURY_CAP = 500_000_000.0  # hard ceiling so money cannot grow without limit
+
 
 
 class HackerError(Exception):
@@ -127,8 +132,8 @@ class HackerService:
                 INSERT INTO ng_countries (
                     country_code, name_fa, name_en, flag, capital_fa, leader_fa, leader_title_fa,
                     currency_code, currency_name_fa, npt_member, owner_player_id, treasury, hp, max_hp,
-                    is_destroyed, claimed_at, entity_type
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,NULL,$10,1000,1000,0,NULL,'hacker')
+                    daily_income, daily_expense, is_destroyed, claimed_at, entity_type
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,NULL,$10,1000,1000,$11,0,0,NULL,'hacker')
                 """,
                 (
                     HACKER_CODE,
@@ -140,7 +145,8 @@ class HackerService:
                     "رهبر هکر",
                     "ANX",
                     "واحد سایبری",
-                    50_000_000.0,
+                    ANON_START_TREASURY,
+                    ANON_DAILY_INCOME,
                 ),
             )
         else:
@@ -148,13 +154,33 @@ class HackerService:
                 await self.db.execute(
                     """
                     UPDATE ng_countries
-                    SET entity_type='hacker', npt_member=0, name_fa=$1, flag=$2
-                    WHERE country_code=$3
+                    SET entity_type='hacker', npt_member=0, name_fa=$1, flag=$2,
+                        treasury=$3, daily_income=$4, daily_expense=0
+                    WHERE country_code=$5
                     """,
-                    (HACKER_NAME_FA, HACKER_FLAG, HACKER_CODE),
+                    (HACKER_NAME_FA, HACKER_FLAG, ANON_START_TREASURY, ANON_DAILY_INCOME, HACKER_CODE),
                 )
             except Exception:
                 log.exception("update ANON entity")
+
+
+    async def clamp_treasury(self, tx=None) -> float:
+        """Keep ANON treasury within finite cap. Returns clamped value."""
+        db = tx or self.db
+        row = await db.fetchrow(
+            "SELECT treasury FROM ng_countries WHERE country_code=$1", (HACKER_CODE,)
+        )
+        cur = float((row or {}).get("treasury") or 0)
+        capped = max(0.0, min(cur, float(ANON_TREASURY_CAP)))
+        if abs(capped - cur) > 0.5:
+            await db.execute(
+                "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
+                (capped, HACKER_CODE),
+            )
+        return capped
+
+    def apply_cap(self, value: float) -> float:
+        return max(0.0, min(float(value or 0), float(ANON_TREASURY_CAP)))
 
     def is_allowed_player(self, pid: int) -> bool:
         """Legacy allow-list + current ANON owner + game owners."""
@@ -381,7 +407,7 @@ class HackerService:
             hrow = await tx.fetchrow(
                 "SELECT treasury FROM ng_countries WHERE country_code=$1", (HACKER_CODE,)
             )
-            h_treas = float((hrow or {}).get("treasury") or 0) + taken
+            h_treas = self.apply_cap(float((hrow or {}).get("treasury") or 0) + taken)
             await tx.execute(
                 "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
                 (new_t, target),
@@ -513,7 +539,7 @@ class HackerService:
             hrow = await tx.fetchrow(
                 "SELECT treasury FROM ng_countries WHERE country_code=$1", (HACKER_CODE,)
             )
-            h_treas = float((hrow or {}).get("treasury") or 0) + total_taken
+            h_treas = self.apply_cap(float((hrow or {}).get("treasury") or 0) + total_taken)
             await tx.execute(
                 "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
                 (h_treas, HACKER_CODE),

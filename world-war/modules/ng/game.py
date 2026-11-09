@@ -895,6 +895,18 @@ class Game:
         return f"✅ خرید موفق\nمبلغ: {int(total):,}"
 
     async def recalc_income(self, code: str) -> None:
+        # Anonymous: fixed daily income (finite, not building-stack infinite)
+        if str(code or "").upper() in (HACKER_CODE, "ANON"):
+            try:
+                from modules.ng.hacker import ANON_DAILY_INCOME
+                income = float(ANON_DAILY_INCOME)
+            except Exception:
+                income = 50_000_000.0
+            await self.db.execute(
+                "UPDATE ng_countries SET daily_income=$1, daily_expense=$2 WHERE country_code=$3",
+                (income, 0.0, code),
+            )
+            return
         inv = await self.db.fetch(
             "SELECT * FROM ng_inventory WHERE country_code=$1", (code,)
         )
@@ -905,8 +917,8 @@ class Game:
             if not meta:
                 continue
             q = float(r["quantity"])
-            income += float(meta["daily_income"]) * q
-            expense += float(meta["maintenance"]) * q
+            income += float(meta.get("daily_income") or 0) * q
+            expense += float(meta.get("maintenance") or 0) * q
         await self.db.execute(
             "UPDATE ng_countries SET daily_income=$1, daily_expense=$2 WHERE country_code=$3",
             (income, expense, code),
@@ -1027,8 +1039,16 @@ class Game:
                 continue
             if int(c2.get("is_destroyed") or 0) == 1:
                 continue
-            net_buildings = float(c2.get("daily_income") or 0) - float(c2.get("daily_expense") or 0)
-            total = (base * mod) + max(0.0, law_bonus) + max(0.0, net_buildings)
+            if str(code).upper() in (HACKER_CODE, "ANON"):
+                # Finite fixed daily for Anonymous — not infinite building stacking
+                try:
+                    from modules.ng.hacker import ANON_DAILY_INCOME, ANON_TREASURY_CAP
+                    total = float(ANON_DAILY_INCOME)
+                except Exception:
+                    total = 50_000_000.0
+            else:
+                net_buildings = float(c2.get("daily_income") or 0) - float(c2.get("daily_expense") or 0)
+                total = (base * mod) + max(0.0, law_bonus) + max(0.0, net_buildings)
             try:
                 leg_m = await self.legendary.income_multiplier(code)
                 total *= float(leg_m)
@@ -1054,6 +1074,12 @@ class Game:
                     if int(live.get("is_destroyed") or 0) == 1:
                         continue
                     new_t = float(live["treasury"] or 0) + total
+                    if str(code).upper() in (HACKER_CODE, "ANON"):
+                        try:
+                            from modules.ng.hacker import ANON_TREASURY_CAP
+                            new_t = min(new_t, float(ANON_TREASURY_CAP))
+                        except Exception:
+                            new_t = min(new_t, 500_000_000.0)
                     await tx.execute(
                         "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
                         (new_t, code),
