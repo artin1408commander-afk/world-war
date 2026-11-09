@@ -18,6 +18,7 @@ from modules.ng.game import GameError
 from modules.ng.alliances import AllianceError, create_cost, RENAME_COST
 from modules.ng.control import ControlError
 from modules.ng.hacker import HackerError, HACKER_CODE, HACKER_NAME_FA, ALLOWED_OWNER_ID
+from modules.ng.special_countries import PAHLAVI_CODE, PAHLAVI_NAME_FA, PAHLAVI_FLAG, PERSONALIZED
 
 log = logging.getLogger(__name__)
 
@@ -1222,7 +1223,7 @@ def register_handlers(bot, app_ctx: dict):
                     free_c = [
                         c for c in countries
                         if not c.get("owner_player_id")
-                        and str(c.get("entity_type") or "country") not in ("group", "hacker")
+                        and str(c.get("entity_type") or "country") not in ("group", "hacker", "special")
                     ]
                     free_g = [
                         c for c in countries
@@ -1248,6 +1249,25 @@ def register_handlers(bot, app_ctx: dict):
                             )])
                     rows.append([("—— شخصی‌سازی‌شده ——", "ng:noop")])
                     rows.append([(f"🎭 {HACKER_NAME_FA}", f"ng:claim:{HACKER_CODE}")])
+                    # other personalized countries (free or claimable by this player)
+                    try:
+                        for scode, smeta in PERSONALIZED.items():
+                            crow = await game.db.fetchrow(
+                                "SELECT owner_player_id, is_destroyed FROM ng_countries WHERE country_code=$1",
+                                (scode,),
+                            )
+                            owned = crow and crow.get("owner_player_id")
+                            destroyed = crow and int(crow.get("is_destroyed") or 0)
+                            if destroyed:
+                                continue
+                            flag = smeta.get("flag") or "🏷"
+                            name = smeta.get("name_fa") or scode
+                            if owned:
+                                rows.append([(f"{flag} {name} (دارای بازیکن)", "ng:noop")])
+                            else:
+                                rows.append([(f"{flag} {name}", f"ng:claim:{scode}")])
+                    except Exception:
+                        log.exception("personalized claim list")
                     rows.append(back_row())
                     await reply(
                         message,

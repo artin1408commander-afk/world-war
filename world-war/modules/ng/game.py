@@ -17,6 +17,8 @@ from modules.ng.alliances import AllianceService, AllianceError, create_cost, DE
 from modules.ng.control import ControlService, ControlError
 from modules.ng.donations import DonationService, DonationError
 from modules.ng.hacker import HackerService, HackerError, HACKER_CODE, ALLOWED_OWNER_ID
+from modules.ng import special_countries as special
+from modules.ng.special_countries import PAHLAVI_CODE, PAHLAVI_ALLOWED_PID, PERSONALIZED
 
 log = logging.getLogger(__name__)
 TEHRAN = ZoneInfo("Asia/Tehran")
@@ -107,6 +109,7 @@ class Game:
             await self.donations.ensure_tables()
             await self.hacker.ensure_tables()
             await self.hacker.ensure_seed_country()
+            await special.ensure_personalized_countries(self.db)
         except Exception:
             log.exception("donations ensure")
         try:
@@ -130,6 +133,10 @@ class Game:
             log.exception("destroy snapshots table")
         await self._seed_catalog()
         await self._seed_countries()
+        try:
+            await special.ensure_personalized_countries(self.db)
+        except Exception:
+            log.exception("personalized countries")
         await self.ensure_owner_tables()
         await self.ensure_un_country()
         await self.ensure_all_owner_countries()
@@ -624,6 +631,25 @@ class Game:
                 raise GameError(
                     "گروه هکری آنانیموس فقط برای کاربر مجاز قابل انتخاب است."
                 )
+        if special.is_personalized_code(code):
+            if not special.can_claim_personalized(code, int(pid)):
+                # allow current owner re-bind
+                try:
+                    row = await self.db.fetchrow(
+                        "SELECT owner_player_id FROM ng_countries WHERE country_code=$1",
+                        (code,),
+                    )
+                    if row and row.get("owner_player_id") and int(row["owner_player_id"]) == int(pid):
+                        pass
+                    else:
+                        meta = special.PERSONALIZED.get(code) or {}
+                        raise GameError(
+                            f"کشور «{meta.get('name_fa') or code}» فقط برای بازیکن مجاز قابل انتخاب است."
+                        )
+                except GameError:
+                    raise
+                except Exception:
+                    raise GameError("این کشور شخصی‌سازی‌شده فقط برای بازیکن مجاز است.")
         p = await self.touch_player(pid)
         # live ownership beats stale ng_players.country_code cache
         live = await self.resolve_country_for_player(int(pid))
