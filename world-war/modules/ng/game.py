@@ -2068,73 +2068,61 @@ class Game:
 
             destroyed = new_hp <= 0
             if destroyed:
-                inv_d = await tx.fetch(
-                    "SELECT * FROM ng_inventory WHERE country_code=$1", (defender,)
-                )
-                d_row = await tx.fetchrow(
-                    "SELECT treasury, owner_player_id FROM ng_countries WHERE country_code=$1",
-                    (defender,),
-                )
-                half_money = float(d_row["treasury"]) * 0.5
-                for r in inv_d:
-                    half = float(r["quantity"]) * 0.5
-                    if half <= 0:
-                        continue
-                    await tx.execute(
-                        "UPDATE ng_inventory SET quantity=$1 WHERE country_code=$2 AND item_code=$3",
-                        (float(r["quantity"]) - half, defender, r["item_code"]),
+                try:
+                    inv_d = await tx.fetch(
+                        "SELECT * FROM ng_inventory WHERE country_code=$1", (defender,)
                     )
-                    inv2 = await tx.fetchrow(
-                        "SELECT quantity FROM ng_inventory WHERE country_code=$1 AND item_code=$2",
-                        (attacker, r["item_code"]),
+                    d_row = await tx.fetchrow(
+                        "SELECT treasury, owner_player_id FROM ng_countries WHERE country_code=$1",
+                        (defender,),
                     )
-                    if inv2:
-                        await tx.execute(
-                            "UPDATE ng_inventory SET quantity=$1 WHERE country_code=$2 AND item_code=$3",
-                            (float(inv2["quantity"]) + half, attacker, r["item_code"]),
-                        )
-                    else:
-                        await tx.execute(
-                            "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
-                            (attacker, r["item_code"], half),
-                        )
-                await tx.execute(
-                    "UPDATE ng_countries SET treasury=$1, owner_player_id=NULL, is_destroyed=0, claimed_at=NULL, hp=1000 WHERE country_code=$2",
-                    (float(d_row["treasury"]) - half_money, defender),
-                )
-                await tx.execute(
-                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
-                    (a_treas + half_money, attacker),
-                )
-                prev = d_row.get("owner_player_id")
-                if prev:
-                    # snapshot remaining assets before freeing country fully
-                    await self._capture_destroy_snapshot(tx, int(prev), defender)
-                    until = (now + timedelta(seconds=DESTROY_WAIT_SEC)).isoformat()
-                    await tx.execute(
-                        "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=$1 WHERE player_id=$2",
-                        (until, int(prev)),
+                    half_money = float((d_row or {}).get("treasury") or 0) * 0.5
+                    a_now = await tx.fetchrow(
+                        "SELECT treasury FROM ng_countries WHERE country_code=$1", (attacker,)
                     )
+                    a_treas_now = float((a_now or {}).get("treasury") or 0)
+                    for r in inv_d:
+                        half = float(r["quantity"]) * 0.5
+                        if half <= 0:
+                            continue
+                        try:
+                            await tx.execute(
+                                "UPDATE ng_inventory SET quantity=$1 WHERE country_code=$2 AND item_code=$3",
+                                (float(r["quantity"]) - half, defender, r["item_code"]),
+                            )
+                            inv2 = await tx.fetchrow(
+                                "SELECT quantity FROM ng_inventory WHERE country_code=$1 AND item_code=$2",
+                                (attacker, r["item_code"]),
+                            )
+                            if inv2:
+                                await tx.execute(
+                                    "UPDATE ng_inventory SET quantity=$1 WHERE country_code=$2 AND item_code=$3",
+                                    (float(inv2["quantity"]) + half, attacker, r["item_code"]),
+                                )
+                            else:
+                                await tx.execute(
+                                    "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
+                                    (attacker, r["item_code"], half),
+                                )
+                        except Exception:
+                            log.exception("loot item on destroy")
+                    await self._apply_defeat_in_tx(
+                        tx,
+                        attacker=attacker,
+                        defender=defender,
+                        now=now,
+                        half_money=half_money,
+                        a_treas=a_treas_now,
+                    )
+                except Exception:
+                    log.exception("destroy block")
                     try:
-                        rem_c = await tx.fetchrow(
-                            "SELECT treasury FROM ng_countries WHERE country_code=$1", (defender,)
-                        )
-                        remain = float((rem_c or {}).get("treasury") or 0)
-                        await tx.execute(
-                            "UPDATE ng_players SET cash=$1 WHERE player_id=$2",
-                            (max(0.0, remain), int(prev)),
+                        await self._apply_defeat_in_tx(
+                            tx, attacker=attacker, defender=defender, now=now, half_money=0, a_treas=0
                         )
                     except Exception:
-                        pass
-                    try:
-                        await self.log_activity(
-                            "dm_notice",
-                            f"💀 کشور شما نابود شد.\nپول پایدار حساب حفظ شد. محدودیت ۳۰ دقیقه‌ای فعال است.",
-                            defender,
-                            int(prev),
-                        )
-                    except Exception:
-                        pass
+                        log.exception("destroy fallback")
+
 
         atk_name = await self.country_label(attacker)
         def_name = await self.country_label(defender)
@@ -4763,19 +4751,17 @@ class Game:
                 )
             destroyed = new_hp <= 0
             if destroyed:
-                prev = d.get("owner_player_id")
-                if prev:
-                    await self._capture_destroy_snapshot(tx, int(prev), defender)
-                await tx.execute(
-                    "UPDATE ng_countries SET owner_player_id=NULL, is_destroyed=0, claimed_at=NULL, hp=1000, treasury=0 WHERE country_code=$1",
-                    (defender,),
-                )
-                if prev:
-                    until = (now + timedelta(seconds=DESTROY_WAIT_SEC)).isoformat()
-                    await tx.execute(
-                        "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=$1 WHERE player_id=$2",
-                        (until, int(prev)),
+                try:
+                    await self._apply_defeat_in_tx(
+                        tx,
+                        attacker=attacker,
+                        defender=defender,
+                        now=now,
+                        half_money=float(d.get("treasury") or 0) * 0.5,
+                        a_treas=0,
                     )
+                except Exception:
+                    log.exception("nuclear destroy")
         atk_name = await self.country_label(attacker)
         def_name = await self.country_label(defender)
         report = (
@@ -5360,6 +5346,100 @@ class Game:
         row = await db.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_destroy_snapshots")
         return int(row["id"])
 
+
+    async def _apply_defeat_in_tx(self, tx, *, attacker: str, defender: str, now, half_money: float, a_treas: float) -> None:
+        """Free defender country after lethal damage. Never raise — log and continue."""
+        try:
+            d_row = await tx.fetchrow(
+                "SELECT treasury, owner_player_id, max_hp FROM ng_countries WHERE country_code=$1",
+                (defender,),
+            )
+            if not d_row:
+                return
+            prev = d_row.get("owner_player_id")
+            treas = float(d_row.get("treasury") or 0)
+            take = min(treas, max(0.0, float(half_money)))
+            left = max(0.0, treas - take)
+            # Snapshot BEFORE wiping inventory if possible
+            if prev:
+                try:
+                    await self._capture_destroy_snapshot(tx, int(prev), defender)
+                except Exception:
+                    log.exception("destroy snapshot %s", defender)
+            await tx.execute(
+                """
+                UPDATE ng_countries
+                SET treasury=$1,
+                    owner_player_id=NULL,
+                    is_destroyed=0,
+                    claimed_at=NULL,
+                    hp=COALESCE(NULLIF(max_hp,0),1000),
+                    daily_income=0,
+                    daily_expense=0
+                WHERE country_code=$2
+                """,
+                (left, defender),
+            )
+            if take > 0:
+                await tx.execute(
+                    "UPDATE ng_countries SET treasury=treasury+$1 WHERE country_code=$2",
+                    (take, attacker),
+                )
+            # clear residual inventory/buildings so next claim is clean
+            try:
+                await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (defender,))
+            except Exception:
+                pass
+            try:
+                await tx.execute("DELETE FROM ng_buildings WHERE country_code=$1", (defender,))
+            except Exception:
+                pass
+            if prev:
+                until = (now + timedelta(seconds=int(DESTROY_WAIT_SEC or 1800))).isoformat()
+                await tx.execute(
+                    "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=$1 WHERE player_id=$2",
+                    (until, int(prev)),
+                )
+                # also clear any other countries still pointing to this player
+                try:
+                    await tx.execute(
+                        """
+                        UPDATE ng_countries
+                        SET owner_player_id=NULL, claimed_at=NULL
+                        WHERE owner_player_id=$1 AND country_code<>$2
+                        """,
+                        (int(prev), defender),
+                    )
+                except Exception:
+                    pass
+                try:
+                    await tx.execute(
+                        "UPDATE ng_players SET cash=$1 WHERE player_id=$2",
+                        (left, int(prev)),
+                    )
+                except Exception:
+                    pass
+                try:
+                    await self._tx_log_activity(
+                        tx,
+                        "dm_notice",
+                        "💀 کشور شما نابود شد.\nپول پایدار حساب حفظ شد. محدودیت ۳۰ دقیقه‌ای فعال است.",
+                        defender,
+                        int(prev),
+                    )
+                except Exception:
+                    try:
+                        await self.log_activity(
+                            "dm_notice",
+                            "💀 کشور شما نابود شد. محدودیت ۳۰ دقیقه‌ای فعال است.",
+                            defender,
+                            int(prev),
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            log.exception("apply defeat %s -> %s", attacker, defender)
+
     async def _capture_destroy_snapshot(self, tx, player_id: int, country_code: str) -> None:
         """Save remaining country state after loot so owner can recover within 3 hours."""
         if not player_id or not country_code:
@@ -5693,24 +5773,48 @@ class Game:
             raise GameError("مجاز نیستید")
         if int(target_id) == int(self.owner_id or 0):
             raise GameError("ریست مالک / سازمان ملل مجاز نیست.")
+        if self.is_owner(int(target_id)):
+            raise GameError("ریست مالک‌های سیستم مجاز نیست.")
         p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (target_id,))
         if not p:
             raise GameError("بازیکن یافت نشد")
-        code = p.get("country_code")
-        if code == UN_CODE:
+        # live ownership beats stale cache
+        code = await self.resolve_country_for_player(int(target_id))
+        if not code:
+            code = p.get("country_code")
+        if code and str(code).upper() in (str(UN_CODE).upper(), "UN", "UN2", "UN3"):
             raise GameError("کشور سازمان ملل قابل ریست از این مسیر نیست.")
         label = await self.country_label(code) if code else "بدون کشور"
         async with self.db.transaction() as tx:
-            if code:
+            # free every country owned by this player
+            owned = await tx.fetch(
+                "SELECT country_code FROM ng_countries WHERE owner_player_id=$1",
+                (int(target_id),),
+            )
+            codes = [str(r["country_code"]) for r in owned]
+            if code and code not in codes:
+                codes.append(str(code))
+            for cc in codes:
+                if str(cc).upper() in ("UN", "UN2", "UN3"):
+                    continue
                 await tx.execute(
                     """
                     UPDATE ng_countries SET
                         owner_player_id=NULL, treasury=0, daily_income=0, daily_expense=0,
-                        hp=1000, is_destroyed=0, peace_penalty_until=NULL, claimed_at=NULL
-                    WHERE country_code=$1 AND owner_player_id=$2
+                        hp=COALESCE(NULLIF(max_hp,0),1000), is_destroyed=0,
+                        peace_penalty_until=NULL, claimed_at=NULL
+                    WHERE country_code=$1
                     """,
-                    (code, target_id),
+                    (cc,),
                 )
+                try:
+                    await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (cc,))
+                    await tx.execute("DELETE FROM ng_buildings WHERE country_code=$1", (cc,))
+                    await tx.execute("DELETE FROM ng_war_state WHERE country_code=$1", (cc,))
+                except Exception:
+                    pass
+            if codes:
+                code = codes[0]
                 await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (code,))
                 await tx.execute("DELETE FROM ng_buildings WHERE country_code=$1", (code,))
                 await tx.execute("DELETE FROM ng_cart WHERE player_id=$1", (target_id,))

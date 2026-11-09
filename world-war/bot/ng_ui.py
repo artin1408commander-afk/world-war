@@ -3155,36 +3155,54 @@ def register_handlers(bot, app_ctx: dict):
                 return
             if data.startswith("ng:fight:"):
                 if not code:
-                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    await out("هنوز کشوری تحت فرمان شما نیست.", force_new=True)
                     return
-                _, _, dst, kind, pct = data.split(":")
                 try:
-                    await out(await game.attack(code, dst, kind, float(pct), pid))
+                    parts = data.split(":")
+                    dst, kind, pct = parts[2], parts[3], parts[4]
+                except Exception:
+                    await out("❌ داده حمله نامعتبر", force_new=True)
+                    return
+                try:
+                    msg = await game.attack(code, dst, kind, float(pct), pid)
+                    await out(msg, force_new=True)
                 except GameError as e:
-                    await out(f"❌ {e}")
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("fight")
+                    await out(f"❌ خطا در حمله: {e}", force_new=True)
                 return
-            if data.startswith("ng:nuke:"):
+            if data.startswith("ng:nuke:") and not data.startswith("ng:nukego:"):
                 if not code:
-                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    await out("هنوز کشوری تحت فرمان شما نیست.", force_new=True)
                     return
                 dst = data.split(":")[-1]
-                rows = [[("✅ تأیید حمله اتمی", f"ng:nukego:{dst}"), ("❌ انصراف", "ng:home")]]
+                rows = [
+                    [("✅ تأیید حمله اتمی", f"ng:nukego:{dst}")],
+                    [("❌ انصراف", "ng:atkmenu")],
+                ]
                 await out(
                     f"⚠️ حمله اتمی به {dst}\n"
                     "یک بمب اتم از انبار مصرف می‌شود.\n"
                     "۲۵ تا ۳۵ درصد سلامت کشور هدف به‌صورت تصادفی کاهش می‌یابد.\n"
                     "ادامه؟",
                     ik(rows),
+                    force_new=True,
                 )
                 return
             if data.startswith("ng:nukego:"):
                 if not code:
-                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    await out("هنوز کشوری تحت فرمان شما نیست.", force_new=True)
                     return
+                dst = data.split(":")[-1]
                 try:
-                    await out(await game.attack_nuclear(code, data.split(":")[-1], pid))
+                    msg = await game.attack_nuclear(code, dst, pid)
+                    await out(msg, ik([[("⚔️ منوی حمله", "ng:atkmenu")], [("🏠 خانه", "ng:home")]]), force_new=True)
                 except GameError as e:
-                    await out(f"❌ {e}")
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("nukego")
+                    await out(f"❌ خطا در حمله اتمی: {e}", force_new=True)
                 return
 
             # owner panel
@@ -4137,11 +4155,23 @@ def register_handlers(bot, app_ctx: dict):
                 await out(text, ik(rows))
                 return
             if data.startswith("ng:ouresetgo:"):
-                tid = int(data.split(":")[-1])
                 try:
-                    await out(await game.reset_player(pid, tid))
+                    tid = int(data.split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                try:
+                    msg = await game.reset_player(pid, tid)
+                    await out(
+                        msg,
+                        ik([[("👤 بازیکنان", "ng:ousers")], [("🏠 خانه", "ng:home")]]),
+                        force_new=True,
+                    )
                 except GameError as e:
-                    await out(f"❌ {e}")
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("ouresetgo")
+                    await out(f"❌ خطا در ریست کاربر: {e}", force_new=True)
                 return
 
             if data.startswith("ng:ouban:"):
