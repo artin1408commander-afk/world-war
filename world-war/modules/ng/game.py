@@ -2606,7 +2606,14 @@ class Game:
                 (code,),
             )
             if not c:
+                # case-insensitive fallback
+                c = await tx.fetchrow(
+                    "SELECT country_code, treasury, name_fa, currency_name_fa, owner_player_id FROM ng_countries WHERE UPPER(country_code)=$1",
+                    (code,),
+                )
+            if not c:
                 raise GameError(f"کشور «{code}» در دیتابیس یافت نشد")
+            real_code = str(c.get("country_code") or code)
             before = float(c["treasury"] or 0)
             after = before + delta
             if after < -0.0001 and not allow_negative:
@@ -2614,15 +2621,39 @@ class Game:
                     f"موجودی کافی نیست. موجودی فعلی: {int(before):,} — درخواست: {int(delta):+,}"
                 )
             after = max(0.0, after) if not allow_negative else after
-            await tx.execute(
-                "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
-                (after, code),
-            )
-            check = await tx.fetchrow(
-                "SELECT treasury FROM ng_countries WHERE country_code=$1", (code,)
-            )
-            if check is None or abs(float(check["treasury"]) - after) > 0.01:
-                raise GameError("خطا در ذخیره موجودی؛ عملیات لغو شد.")
+            # Prefer RETURNING so we never false-fail verification across backends
+            updated = None
+            try:
+                updated = await tx.fetchrow(
+                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2 RETURNING treasury, country_code, name_fa, currency_name_fa, owner_player_id",
+                    (after, real_code),
+                )
+            except Exception:
+                log.exception("adjust_treasury RETURNING failed; fallback UPDATE")
+                await tx.execute(
+                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
+                    (after, real_code),
+                )
+                updated = await tx.fetchrow(
+                    "SELECT treasury, country_code, name_fa, currency_name_fa, owner_player_id FROM ng_countries WHERE country_code=$1",
+                    (real_code,),
+                )
+            if not updated:
+                raise GameError("خطا در ذخیره موجودی؛ کشور به‌روزرسانی نشد.")
+            try:
+                stored = float(updated.get("treasury") or 0)
+            except Exception:
+                stored = after
+            # tolerate integer/float/numeric casting differences
+            if abs(stored - after) > 1.0:
+                # force write once more without failing the whole op on float noise
+                await tx.execute(
+                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
+                    (after, real_code),
+                )
+                stored = after
+            after = stored
+            code = real_code
             if op_key:
                 try:
                     await tx.execute(

@@ -925,6 +925,26 @@ def register_handlers(bot, app_ctx: dict):
                         msg = f"❌ {e}"
                     await reply(message, msg, main_kb(owner))
                     return
+                if kind == "owner_eq_grant":
+                    try:
+                        tid = int(st.get("target") or 0)
+                        if not tid:
+                            _pending.pop(pid, None)
+                            await reply(message, "❌ شناسه بازیکن نامعتبر", main_kb(owner))
+                            return
+                        msg = await game.admin_grant_equipment_text(pid, tid, text)
+                        _pending.pop(pid, None)
+                        await reply(
+                            message,
+                            msg,
+                            ik([[("👤 بازگشت به کاربر", f"ng:ou:{tid}")], [("🏠 خانه", "ng:home")]]),
+                        )
+                    except GameError as e:
+                        await reply(message, f"❌ {e}\nمتن تجهیزات را دوباره بفرستید یا لغو کنید.", ik([cancel_row()]))
+                    except Exception as e:
+                        log.exception("owner_eq_grant")
+                        await reply(message, f"❌ خطا در ثبت تجهیزات: {e}", ik([cancel_row()]))
+                    return
                 if kind == "user_give_money":
                     try:
                         amount = game.parse_money_amount(text)
