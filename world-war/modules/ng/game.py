@@ -5160,6 +5160,100 @@ class Game:
         return chr(10).join(lines), total
 
 
+
+    async def ranking_power(self, page: int = 0, page_size: int = 12) -> tuple[str, int]:
+        """Owner ranking: money + HP + equipment value. #1 = superpower."""
+        rows = await self.db.fetch(
+            """
+            SELECT country_code, name_fa, flag, treasury, hp, max_hp, owner_player_id, double_hp
+            FROM ng_countries
+            WHERE owner_player_id IS NOT NULL
+              AND COALESCE(is_destroyed,0)=0
+              AND country_code <> $1
+            """,
+            (UN_CODE,),
+        )
+        # equipment value per country
+        inv_rows = await self.db.fetch(
+            """
+            SELECT country_code, item_code, quantity
+            FROM ng_inventory
+            WHERE quantity > 0
+            """
+        )
+        inv_map: dict[str, float] = {}
+        qty_map: dict[str, float] = {}
+        for r in inv_rows:
+            cc = str(r.get("country_code") or "")
+            ic = str(r.get("item_code") or "")
+            q = float(r.get("quantity") or 0)
+            if q <= 0 or not cc:
+                continue
+            price = 0.0
+            try:
+                meta = (self._cat or {}).get(ic) or {}
+                price = float(meta.get("unit_price") or 0)
+            except Exception:
+                price = 0.0
+            inv_map[cc] = inv_map.get(cc, 0.0) + q * max(0.0, price)
+            qty_map[cc] = qty_map.get(cc, 0.0) + q
+
+        ranked = []
+        for r in rows:
+            cc = str(r["country_code"])
+            money = float(r.get("treasury") or 0)
+            hp = float(r.get("hp") or 0)
+            eq_val = float(inv_map.get(cc, 0.0))
+            eq_qty = float(qty_map.get(cc, 0.0))
+            # composite score: money + equipment market value + HP weight
+            score = money + eq_val + (hp * 50_000.0)
+            ranked.append({
+                "code": cc,
+                "name": r.get("name_fa") or cc,
+                "flag": r.get("flag") or "",
+                "money": money,
+                "hp": hp,
+                "max_hp": float(r.get("max_hp") or 1000),
+                "dbl": int(r.get("double_hp") or 0),
+                "eq_val": eq_val,
+                "eq_qty": eq_qty,
+                "owner": r.get("owner_player_id"),
+                "score": score,
+            })
+        ranked.sort(key=lambda x: (-x["score"], -x["money"], -x["eq_val"], -x["hp"]))
+        total = len(ranked)
+        page = max(0, int(page))
+        page_size = max(5, min(20, int(page_size)))
+        start = page * page_size
+        chunk = ranked[start:start + page_size]
+        lines = [
+            "🏅 رنکینگ قدرت کشورها",
+            "ترتیب بر اساس مجموع: پول + ارزش تجهیزات + جان",
+            f"تعداد کشورهای دارای رهبر: {total}",
+            "",
+        ]
+        if not chunk:
+            lines.append("کشوری برای رنکینگ یافت نشد.")
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        for i, r in enumerate(chunk, start=start + 1):
+            medal = medals.get(i, f"{i}.")
+            title = " — 🌟 ابرقدرت" if i == 1 else ""
+            dbl = " ×۲" if r["dbl"] else ""
+            lines.append(f"{medal} {r['flag']} {r['name']}{title}")
+            lines.append(
+                f"   💰 پول: {int(r['money']):,}  |  ❤️ جان: {int(r['hp'])}/{int(r['max_hp'])}{dbl}"
+            )
+            lines.append(
+                f"   🪖 تجهیزات: {int(r['eq_qty'])} واحد  |  ارزش≈ {int(r['eq_val']):,}"
+            )
+            lines.append(f"   📊 امتیاز قدرت: {int(r['score']):,}")
+            lines.append(f"   👤 مالک: {r['owner']}")
+            lines.append("")
+        pages = max(1, (total + page_size - 1) // page_size)
+        lines.append(f"صفحه {page + 1} از {pages}")
+        return chr(10).join(lines), total
+
+
     async def ledger_write(self, kind: str, amount: float, actor: int, from_c=None, to_c=None, reason: str = "") -> None:
         nid = await self.db.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_finance_ledger")
         await self.db.execute(

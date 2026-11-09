@@ -529,7 +529,8 @@ def register_handlers(bot, app_ctx: dict):
                     [("بن کاربر", "ng:oban"), ("آنبن کاربر", "ng:ounban")],
                     [("تغییر پول کشور", "ng:omoney")],
                     [("💰 گرفتن مالیات", "ng:otax"), ("⚖️ محکوم کردن کشور", "ng:ocondemn")],
-                    [("❤️ دیدن HP ها", "ng:ohp"), ("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
+                    [("❤️ دیدن HP ها", "ng:ohp"), ("🏅 رنکینگ", "ng:orank")],
+                    [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
                     [("🎁 مدیریت لجندری", "ng:oleg"), ("💰 شارژ کیف پول", "ng:owallet")],
                     [("🎭 گروه هکری آنانیموس", "ng:ohack")],
                     [("💎 حمایت مالی", "ng:odonate")],
@@ -4115,6 +4116,33 @@ def register_handlers(bot, app_ctx: dict):
                 rows.append([("🛡 بازگشت پنل مالک", "ng:opanel")])
                 await out(text_hp, ik(rows))
                 return
+            if data == "ng:orank" or data.startswith("ng:orank:"):
+                page = 0
+                if data.startswith("ng:orank:"):
+                    try:
+                        page = int(data.split(":")[-1])
+                    except ValueError:
+                        page = 0
+                try:
+                    text_r, total = await game.ranking_power(page=page, page_size=10)
+                except Exception as e:
+                    log.exception("orank")
+                    await out(f"❌ خطا در رنکینگ: {e}", force_new=True)
+                    return
+                nav = []
+                pages = max(1, (total + 9) // 10)
+                if page > 0:
+                    nav.append(("⬅️ قبلی", f"ng:orank:{page-1}"))
+                if page + 1 < pages:
+                    nav.append(("بعدی ➡️", f"ng:orank:{page+1}"))
+                rows = []
+                if nav:
+                    rows.append(nav)
+                rows.append([("🔄 بروزرسانی", f"ng:orank:{page}")])
+                rows.append([("🛡 بازگشت پنل مالک", "ng:opanel")])
+                await out(text_r, ik(rows), force_new=True)
+                return
+
             if data == "ng:opanel":
                 rows = []
                 if game.is_primary_owner(pid):
@@ -4122,7 +4150,8 @@ def register_handlers(bot, app_ctx: dict):
                 rows += [
                     [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
                     [("💵 پول همگانی", "ng:ogiveall"), ("💰 پرداخت درآمد روزانه", "ng:odaily")],
-                    [("❤️ دیدن HP ها", "ng:ohp"), ("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
+                    [("❤️ دیدن HP ها", "ng:ohp"), ("🏅 رنکینگ", "ng:orank")],
+                    [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
                     [("🎁 مدیریت لجندری", "ng:oleg"), ("💰 شارژ کیف پول", "ng:owallet")],
                     [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
                     [("⬅️ بستن", "ng:home")],
