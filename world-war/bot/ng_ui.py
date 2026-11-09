@@ -141,6 +141,7 @@ def more_menu_rows():
         [("📜 بیانیه", "ng:more:stmt"), ("📊 گزارش‌ها", "ng:more:report")],
         [("🎁 دعوت", "ng:more:ref"), ("💎 حمایت مالی", "ng:more:donate")],
         [("پیمان NPT", "ng:more:npt")],
+        [("🎭 عملیات هکری", "ng:hack:menu")],
         [("ℹ️ درباره ما", "ng:more:about")],
         back_row(),
     ]
@@ -1305,32 +1306,41 @@ def register_handlers(bot, app_ctx: dict):
 
             if text == BTN_MY:
                 nav_push(pid, "country")
-                if code and str(code).upper() == HACKER_CODE:
-                    await reply(
-                        message,
-                        f"🎭 منوی {HACKER_NAME_FA}",
-                        ik([
-                            [("👤 پروفایل", "ng:hack:profile")],
-                            [("💰 دزدی از کشورها", "ng:hack:steal"), ("🏦 دزدی از بانک جهانی", "ng:hack:bank")],
-                            [("🌍 دیدن کشورها", "ng:hack:countries"), ("📢 بیانیه دادن", "ng:hack:stmt")],
-                            [("🚀 خرید تجهیزات", "ng:hack:shop")],
-                            back_row(),
-                        ]),
-                    )
-                    return
                 if not code:
                     await reply(message, "ابتدا «انتخاب کشور» را بزنید.", main_kb(owner))
                     return
                 nav_push(pid, "country")
                 card = await game.country_card(code)
+                if str(code).upper() == HACKER_CODE:
+                    rows = [
+                        [("🏛 کنترل کشور", "ng:ctrl")],
+                        [("📦 انبار", "ng:go:inv"), ("💰 اقتصاد", "ng:go:eco")],
+                        [("🛒 فروشگاه", "ng:shophome"), ("📜 گزارش", "ng:go:rep")],
+                        [("👤 پروفایل هکری", "ng:hack:profile")],
+                        [("💰 دزدی از کشورها", "ng:hack:steal"), ("🏦 دزدی بانک جهانی", "ng:hack:bank")],
+                        [("🌍 دیدن کشورها", "ng:hack:countries"), ("📢 بیانیه هکری", "ng:hack:stmt")],
+                        [("🎭 منوی هکری", "ng:hack:menu")],
+                        back_row(),
+                    ]
+                    note = (
+                        card + chr(10) + chr(10)
+                        + "🛒 خرید دقیقاً مثل بقیه کشورها از «فروشگاه» (سبد + تسویه)." + chr(10)
+                        + "دکمه‌های زیر فقط عملیات ویژه هکری هستند."
+                    )
+                    await reply(message, note, ik(rows))
+                    return
                 rows = [
                     [("🏛 کنترل کشور", "ng:ctrl")],
                     [("✅ عضویت NPT", "ng:npt:join"), ("🚪 خروج NPT", "ng:npt:leave")],
                     [("📦 انبار", "ng:go:inv"), ("💰 اقتصاد", "ng:go:eco")],
-                    [("📜 گزارش", "ng:go:rep")],
+                    [("🛒 فروشگاه", "ng:shophome"), ("📜 گزارش", "ng:go:rep")],
                     back_row(),
                 ]
-                await reply(message, card + "\n\n☢ برای عضویت/خروج از پیمان NPT از دکمه‌های زیر استفاده کنید.", ik(rows))
+                await reply(
+                    message,
+                    card + chr(10) + chr(10) + "☢ برای عضویت/خروج از پیمان NPT از دکمه‌های زیر استفاده کنید.",
+                    ik(rows),
+                )
                 return
 
             if text == BTN_CTRL:
@@ -2204,18 +2214,26 @@ def register_handlers(bot, app_ctx: dict):
                         log.exception("post-claim referral")
 
                     if str((c or {}).get("country_code") or "").upper() == HACKER_CODE:
+                        card = await game.country_card(c["country_code"])
+                        msg = (
+                            "✅ " + HACKER_NAME_FA + " تحت فرمان شماست." + chr(10) + chr(10)
+                            + card + chr(10) + chr(10)
+                            + "از این به بعد مثل بقیه کشورها از فروشگاه / انبار / اقتصاد استفاده کنید." + chr(10)
+                            + "عملیات ویژه: منوی هکری (دزدی، بانک، پروفایل، بیانیه)."
+                        )
                         await out(
-                            f"✅ {HACKER_NAME_FA} تحت فرمان شماست.",
+                            msg,
                             ik([
-                                [("👤 پروفایل", "ng:hack:profile")],
-                                [("💰 دزدی از کشورها", "ng:hack:steal"), ("🏦 دزدی از بانک جهانی", "ng:hack:bank")],
-                                [("🌍 دیدن کشورها", "ng:hack:countries"), ("📢 بیانیه دادن", "ng:hack:stmt")],
-                                [("🚀 خرید تجهیزات", "ng:hack:shop")],
+                                [("🛒 فروشگاه", "ng:shophome"), ("📦 انبار", "ng:go:inv")],
+                                [("👤 پروفایل هکری", "ng:hack:profile")],
+                                [("💰 دزدی", "ng:hack:steal"), ("🏦 بانک جهانی", "ng:hack:bank")],
+                                [("📢 بیانیه", "ng:hack:stmt"), ("🎭 منوی هکری", "ng:hack:menu")],
                                 back_row(),
                             ]),
+                            force_new=True,
                         )
                     else:
-                        await out("✅ کشور ثبت شد\n\n" + await game.country_card(c["country_code"]))
+                        await out("✅ کشور ثبت شد" + chr(10) + chr(10) + await game.country_card(c["country_code"]))
                 except GameError as e:
                     await out(f"❌ {e}")
                 except Exception as e:
@@ -4473,7 +4491,7 @@ def register_handlers(bot, app_ctx: dict):
                         [("👤 پروفایل", "ng:hack:profile")],
                         [("💰 دزدی از کشورها", "ng:hack:steal"), ("🏦 دزدی از بانک جهانی", "ng:hack:bank")],
                         [("🌍 دیدن کشورها", "ng:hack:countries"), ("📢 بیانیه دادن", "ng:hack:stmt")],
-                        [("🚀 خرید تجهیزات", "ng:hack:shop")],
+                        [("🛒 فروشگاه (مثل بقیه کشورها)", "ng:shophome")],
                         back_row(),
                     ]),
                 )
@@ -4572,84 +4590,60 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ {e}")
                 return
             if data == "ng:hack:shop":
+                # Same shared shop as every other country
                 try:
                     await game.hacker.assert_owner(pid)
-                    rows = [
-                        [("🛡 پدافندها", "ng:hack:sc:defense")],
-                        [("🚀 موشک‌ها", "ng:hack:sc:missile")],
-                        [("☢ بمب اتم / هسته‌ای", "ng:hack:sc:nuclear")],
-                        [("🪖 زمینی", "ng:hack:sc:ground"), ("✈️ هوایی", "ng:hack:sc:air")],
-                        [("🔙 بازگشت", "ng:hack:menu")],
-                    ]
-                    await out("🚀 فروشگاه گروه هکری\nیک دسته را انتخاب کنید:", ik(rows), force_new=True)
                 except Exception as e:
-                    log.exception("hack shop")
                     await out(f"❌ {e}", force_new=True)
+                    return
+                cats = {}
+                for it in (game._cat or {}).values():
+                    cats[it.get("category") or "other"] = cats.get(it.get("category") or "other", 0) + 1
+                rows = []
+                pair = []
+                for cat, n in list(cats.items())[:12]:
+                    name = {
+                        "ground": "زمینی", "air": "هوایی", "sea": "دریایی", "missile": "موشکی",
+                        "defense": "پدافند", "infra": "زیرساخت", "nuclear": "هسته‌ای", "mine": "منابع",
+                        "cyber": "هک و امنیت",
+                    }.get(cat, cat)
+                    pair.append((f"{name} ({n})", f"ng:shop:{cat}"))
+                    if len(pair) == 2:
+                        rows.append(pair)
+                        pair = []
+                if pair:
+                    rows.append(pair)
+                rows.append([("🛒 سبد خرید", "ng:cart"), ("✅ تسویه حساب", "ng:checkout")])
+                rows.append([("🔙 منوی هکری", "ng:hack:menu")])
+                rows.append(back_row())
+                await out(
+                    "🛒 فروشگاه (مشترک با همه کشورها)" + chr(10) + chr(10)
+                    + "دسته را انتخاب کنید، به سبد اضافه کنید، سپس تسویه حساب.",
+                    ik(rows),
+                    force_new=True,
+                )
                 return
 
             if data.startswith("ng:hack:sc:"):
                 cat = data.split(":")[-1]
-                allowed = ("defense", "missile", "nuclear", "ground", "air", "sea")
-                if cat not in allowed:
-                    await out("دسته غیرمجاز", force_new=True)
-                    return
-                try:
-                    await game.hacker.assert_owner(pid)
-                except Exception as e:
-                    await out(f"❌ {e}", force_new=True)
-                    return
-                try:
-                    await game.ensure_shop_catalog()
-                    await game._reload_catalog_prices()
-                except Exception:
-                    log.exception("hacker shop catalog reload")
                 items = [
                     it for it in (game._cat or {}).values()
                     if str(it.get("category") or "") == cat
                 ]
-                if not items:
-                    try:
-                        rows_db = await game.db.fetch(
-                            "SELECT * FROM ng_shop_catalog WHERE category=$1 ORDER BY unit_price ASC",
-                            (cat,),
-                        )
-                        items = [dict(r) for r in rows_db]
-                    except Exception:
-                        log.exception("shop db fetch")
-                        items = []
-                # sort by price
-                try:
-                    items = sorted(items, key=lambda x: float(x.get("unit_price") or 0))
-                except Exception:
-                    pass
-                codes = []
                 rows = []
-                for it in items[:30]:
-                    ic = str(it.get("item_code") or "").strip()
-                    if not ic:
-                        continue
-                    codes.append(ic)
-                    idx = len(codes) - 1
-                    name = it.get("name_fa") or ic
-                    price = int(float(it.get("unit_price") or 0))
-                    label = f"{name} | {price:,}"
-                    rows.append([(label[:60], f"ng:hbuyc:{ic}")])
-                _hacker_shop_cache[int(pid)] = codes
-                if not rows:
-                    await out(
-                        f"در دسته «{cat}» آیتمی پیدا نشد.\nاز پنل مالک کاتالوگ را بررسی کنید.",
-                        ik([[("🔙 فروشگاه", "ng:hack:shop")]]),
-                        force_new=True,
-                    )
-                    return
-                rows.append([("🔙 فروشگاه", "ng:hack:shop"), ("👤 منو", "ng:hack:menu")])
-                await out(
-                    f"🚀 فروشگاه هکر — {cat}\n"
-                    f"{len(rows)-1} آیتم\n"
-                    f"روی هر آیتم بزن تا همان لحظه خرید شود (مستقیم از خزانه).",
-                    ik(rows),
-                    force_new=True,
-                )
+                for it in items[:25]:
+                    rows.append([(
+                        f"{it.get('name_fa') or it.get('item_code')} | {int(float(it.get('unit_price') or 0)):,}",
+                        f"ng:item:{it.get('item_code')}",
+                    )])
+                rows.append([("🛒 سبد", "ng:cart"), ("⬅️ دسته‌ها", "ng:shophome")])
+                rows.append([("🔙 منوی هکری", "ng:hack:menu")])
+                rows.append(back_row())
+                name = {
+                    "ground": "زمینی", "air": "هوایی", "sea": "دریایی", "missile": "موشکی",
+                    "defense": "پدافند", "infra": "زیرساخت", "nuclear": "هسته‌ای", "mine": "منابع",
+                }.get(cat, cat)
+                await out(f"🛒 فروشگاه — {name}" + chr(10) + "آیتم را انتخاب کنید:", ik(rows), force_new=True)
                 return
 
             if data.startswith("ng:hbuyc:") or data.startswith("ng:hbuy:") or data.startswith("ng:hack:item:") or data.startswith("ng:buy:"):
