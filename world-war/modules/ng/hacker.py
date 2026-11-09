@@ -645,19 +645,11 @@ class HackerService:
             f"{body}\n\n"
             f"— {HACKER_FLAG}"
         )
-        # Force group delivery via activity queue (group_log_loop)
+        # Exactly ONE group delivery path (avoid triple posts)
         try:
             await self.g.log_activity("group_hacker_statement", text, HACKER_CODE, None)
         except Exception:
             log.exception("hacker statement group activity")
-        try:
-            await self.g.broadcast_log("admin", text)
-        except Exception:
-            log.exception("hacker broadcast")
-        try:
-            await self.g.broadcast_log("statement", text)
-        except Exception:
-            log.exception("hacker statement flag broadcast")
         nid = await self.db.fetchrow(
             "SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_hacker_announcements"
         )

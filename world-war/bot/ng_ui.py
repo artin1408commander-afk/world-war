@@ -1714,8 +1714,8 @@ def register_handlers(bot, app_ctx: dict):
             elif data not in (
                 "ng:home", "ng:cancel", "ng:joincheck", "ng:guide",
                 "ng:acreate", "ng:acreateyes",
-            ) and not data.startswith("ng:joinlink") and not data.startswith("ng:guide:") and not data.startswith("ng:a") and not data.startswith("ng:leg"):
-                # ng:a* alliance flows allowed so user is not stuck mid-create; ng:leg* legendary allowed
+            ) and not data.startswith("ng:joinlink") and not data.startswith("ng:guide:") and not data.startswith("ng:a") and not data.startswith("ng:leg") and not data.startswith("ng:hack") and not data.startswith("ng:hbuy"):
+                # alliance + legendary + Anonymous hacker flows must not be blocked mid-menu
                 if not await require_membership(pid, cq, True):
                     return
 
@@ -4494,7 +4494,7 @@ def register_handlers(bot, app_ctx: dict):
                             f"ng:hack:stv:{c['country_code']}",
                         )])
                     rows.append([("🔙 بازگشت", "ng:hack:menu")])
-                    await out("💰 انتخاب کشور هدف:", ik(rows))
+                    await out("💰 انتخاب کشور هدف:", ik(rows), force_new=True)
                 except Exception as e:
                     await out(f"❌ {e}")
                 return
@@ -4527,48 +4527,18 @@ def register_handlers(bot, app_ctx: dict):
                 target = data.split(":")[-1]
                 try:
                     msg = await game.hacker.steal_country(pid, target)
-                    await out(msg, ik([[("💰 دزدی دوباره", "ng:hack:steal"), ("🔙 منو", "ng:hack:menu")]]), force_new=True)
+                    await out(
+                        msg,
+                        ik([[("💰 دزدی دوباره", "ng:hack:steal"), ("🔙 منو", "ng:hack:menu")]]),
+                        force_new=True,
+                    )
                 except (HackerError, GameError) as e:
                     await out(f"❌ {e}", ik([[("🔙 منو", "ng:hack:menu")]]), force_new=True)
                 except Exception as e:
-                    log.exception("hacker steal")
-                    await out(f"❌ {e}", force_new=True)
+                    log.exception("hack steal do")
+                    await out(f"❌ خطا در دزدی: {e}", force_new=True)
                 return
-            if data == "ng:hack:countries" or data.startswith("ng:hack:cp:"):
-                page = 0
-                if data.startswith("ng:hack:cp:"):
-                    try:
-                        page = int(data.split(":")[-1])
-                    except Exception:
-                        page = 0
-                countries = await game.list_countries(include_un=True)
-                page_size = 12
-                total = len(countries)
-                pages = max(1, (total + page_size - 1) // page_size)
-                page = max(0, min(page, pages - 1))
-                chunk = countries[page * page_size:(page + 1) * page_size]
-                lines = [f"🌍 کشورها — صفحه {page+1}/{pages}", ""]
-                rows = []
-                show_id = game.is_owner(pid)
-                for c in chunk:
-                    hp = float(c.get("hp") or 0)
-                    mx = float(c.get("max_hp") or 1000) or 1000
-                    owner = c.get("owner_player_id")
-                    oid = str(owner) if (show_id and owner) else ("—" if not owner else "محرمانه")
-                    lines.append(
-                        f"{c.get('flag','')} {c.get('name_fa')} | HP {int(100*hp/mx)}% | "
-                        f"💰{int(float(c.get('treasury') or 0)):,} | مالک:{oid}"
-                    )
-                nav = []
-                if page > 0:
-                    nav.append(("⬅️ قبلی", f"ng:hack:cp:{page-1}"))
-                if page + 1 < pages:
-                    nav.append(("بعدی ➡️", f"ng:hack:cp:{page+1}"))
-                if nav:
-                    rows.append(nav)
-                rows.append([("🔙 بازگشت", "ng:hack:menu")])
-                await out(chr(10).join(lines), ik(rows))
-                return
+
             if data == "ng:hack:stmt":
                 try:
                     await game.hacker.assert_owner(pid)
@@ -4639,7 +4609,7 @@ def register_handlers(bot, app_ctx: dict):
                     name = it.get("name_fa") or ic
                     price = int(float(it.get("unit_price") or 0))
                     label = f"{name} | {price:,}"
-                    rows.append([(label[:60], f"ng:hbuy:{idx}")])
+                    rows.append([(label[:60], f"ng:hbuyc:{ic}")])
                 _hacker_shop_cache[int(pid)] = codes
                 if not rows:
                     await out(
@@ -4658,14 +4628,17 @@ def register_handlers(bot, app_ctx: dict):
                 )
                 return
 
-            if data.startswith("ng:hbuy:") or data.startswith("ng:hack:item:") or data.startswith("ng:buy:"):
+            if data.startswith("ng:hbuyc:") or data.startswith("ng:hbuy:") or data.startswith("ng:hack:item:") or data.startswith("ng:buy:"):
                 try:
                     await game.hacker.assert_owner(pid)
                     raw = data.split(":")[-1]
                     ic = None
                     qty = 1.0
+                    # direct code: ng:hbuyc:ITEM_CODE
+                    if data.startswith("ng:hbuyc:"):
+                        ic = data.split(":", 2)[-1].strip()
                     # indexed buy: ng:hbuy:3
-                    if data.startswith("ng:hbuy:") and raw.isdigit():
+                    elif data.startswith("ng:hbuy:") and raw.isdigit():
                         codes = _hacker_shop_cache.get(int(pid)) or []
                         idx = int(raw)
                         if 0 <= idx < len(codes):
@@ -4689,12 +4662,9 @@ def register_handlers(bot, app_ctx: dict):
                         return
                     msg = await game.hacker.buy_item(pid, ic, qty)
                     rows = [
-                        [("＋۱ دوباره", f"ng:hbuy:{raw}" if raw.isdigit() else f"ng:hbuy:0")],
+                        [("＋۱ دوباره", f"ng:hbuyc:{ic}"), ("＋۵", f"ng:hbuy5c:{ic}")],
                         [("🚀 ادامه خرید", "ng:hack:shop"), ("👤 منو هکر", "ng:hack:menu")],
                     ]
-                    # fix +1 for index
-                    if raw.isdigit():
-                        rows[0] = [("＋۱ دوباره", f"ng:hbuy:{raw}"), ("＋۵", f"ng:hbuy5:{raw}")]
                     await out(msg, ik(rows), force_new=True)
                 except (GameError, HackerError) as e:
                     await out(f"❌ {e}", ik([[("🚀 فروشگاه", "ng:hack:shop")]]), force_new=True)
@@ -4703,18 +4673,27 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ خطا در خرید: {e}", ik([[("🚀 فروشگاه", "ng:hack:shop")]]), force_new=True)
                 return
 
-            if data.startswith("ng:hbuy5:"):
+            if data.startswith("ng:hbuy5c:") or data.startswith("ng:hbuy5:"):
                 try:
                     await game.hacker.assert_owner(pid)
                     raw = data.split(":")[-1]
-                    codes = _hacker_shop_cache.get(int(pid)) or []
-                    if not raw.isdigit() or not (0 <= int(raw) < len(codes)):
-                        await out("لیست منقضی — دسته را دوباره باز کنید.", force_new=True)
+                    ic = None
+                    if data.startswith("ng:hbuy5c:"):
+                        ic = data.split(":", 2)[-1].strip()
+                    elif raw.isdigit():
+                        codes = _hacker_shop_cache.get(int(pid)) or []
+                        idx = int(raw)
+                        if 0 <= idx < len(codes):
+                            ic = codes[idx]
+                    else:
+                        ic = raw
+                    if not ic:
+                        await out("لیست فروشگاه منقضی شده. دوباره باز کنید.", force_new=True)
                         return
-                    ic = codes[int(raw)]
-                    msg = await game.hacker.buy_item(pid, ic, 5)
+                    msg = await game.hacker.buy_item(pid, ic, 5.0)
                     await out(msg, ik([[("🚀 فروشگاه", "ng:hack:shop")]]), force_new=True)
                 except Exception as e:
+                    log.exception("hbuy5")
                     await out(f"❌ {e}", force_new=True)
                 return
 
