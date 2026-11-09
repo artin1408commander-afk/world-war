@@ -22,6 +22,25 @@ from modules.ng.special_countries import PAHLAVI_CODE, PAHLAVI_NAME_FA, PAHLAVI_
 
 log = logging.getLogger(__name__)
 
+
+def parse_amount(text) -> float:
+    """Parse user-typed money/qty; strip invisible/bidi marks (e.g. U+200E from RTL keyboards)."""
+    import re
+    s = str(text or "")
+    for ch in (
+        "‎", "‏", "​", "‌", "‍", "﻿", " ",
+        "‪", "‫", "‬", "‭", "‮",
+    ):
+        s = s.replace(ch, "")
+    s = s.replace(",", "").replace("،", "").replace(" ", "").replace("٬", "").strip()
+    trans = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+    s = s.translate(trans)
+    s = re.sub(r"[^0-9.\-]", "", s)
+    if not s or s in (".", "-", "-."):
+        raise ValueError("عدد نامعتبر")
+    return float(s)
+
+
 BTN_MY = "🏛 کشور من"
 BTN_ECO = "💰 اقتصاد"
 BTN_SHOP = "🛒 فروشگاه"
@@ -652,7 +671,7 @@ def register_handlers(bot, app_ctx: dict):
                 elif kind == "ally_deposit":
                     _pending.pop(pid, None)
                     try:
-                        msg = await game.alliances.deposit(pid, code, float(text.replace(",","")))
+                        msg = await game.alliances.deposit(pid, code, parse_amount(text))
                     except (AllianceError, GameError, ValueError) as e:
                         msg = f"❌ {e}"
                     await reply(message, msg, main_kb(owner))
@@ -660,7 +679,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "ally_withdraw":
                     _pending.pop(pid, None)
                     try:
-                        msg = await game.alliances.withdraw(pid, float(text.replace(",","")))
+                        msg = await game.alliances.withdraw(pid, parse_amount(text))
                     except (AllianceError, GameError, ValueError) as e:
                         msg = f"❌ {e}"
                     await reply(message, msg, main_kb(owner))
@@ -685,7 +704,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "ally_etreasury":
                     _pending.pop(pid, None)
                     try:
-                        msg = await game.alliances.expand_treasury(pid, float(text.replace(",","")))
+                        msg = await game.alliances.expand_treasury(pid, parse_amount(text))
                     except (AllianceError, GameError, ValueError) as e:
                         msg = f"❌ {e}"
                     await reply(message, msg, main_kb(owner))
@@ -693,7 +712,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "ally_pay":
                     st["pay_country"] = st.get("pay_country")
                     try:
-                        amount = float(text.replace(",",""))
+                        amount = parse_amount(text)
                         msg = await game.alliances.pay_member(pid, st["pay_country"], amount)
                     except (AllianceError, GameError, ValueError, KeyError) as e:
                         msg = f"❌ {e}"
@@ -703,7 +722,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "set_shop_price":
                     st = _pending.pop(pid, {})
                     try:
-                        price = float(text.replace(",", "").replace("،", "").strip())
+                        price = parse_amount(text)
                         msg = await game.set_item_unit_price(pid, st.get("item"), price)
                     except GameError as e:
                         msg = f"❌ {e}"
@@ -786,7 +805,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "law_bonus":
                     st = _pending.pop(pid, {})
                     try:
-                        bonus = float(text.replace(",", "").strip() or 0)
+                        bonus = parse_amount(text or "0")
                     except Exception:
                         bonus = 0
                     try:
@@ -822,16 +841,21 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "aid_money_amount":
                     _pending.pop(pid, None)
                     try:
-                        amount = float(text.replace(",", "").replace("،", ""))
+                        amount = parse_amount(text)
+                        if amount <= 0:
+                            raise ValueError("مبلغ باید بزرگ‌تر از صفر باشد")
                         msg = await game.aid_money(code, st["dst"], amount, pid)
                     except (ValueError, GameError) as e:
                         msg = f"❌ {e}"
+                    except Exception as e:
+                        log.exception("aid_money_amount")
+                        msg = "❌ مبلغ نامعتبر است. فقط عدد بنویسید." + chr(10) + "مثال: 50000000"
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "aid_army_qty":
                     _pending.pop(pid, None)
                     try:
-                        qty = float(text.replace(",", ""))
+                        qty = parse_amount(text)
                         msg = await game.aid_army(code, st["dst"], st["item"], qty, pid)
                     except (ValueError, GameError) as e:
                         msg = f"❌ {e}"
@@ -839,7 +863,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 if kind == "mkt_qty":
                     try:
-                        st["qty"] = float(text.replace(",", ""))
+                        st["qty"] = parse_amount(text)
                         st["kind"] = "mkt_price"
                         await reply(message, "قیمت واحد پیشنهادی را بنویسید:")
                     except ValueError:
@@ -848,7 +872,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "mkt_price":
                     _pending.pop(pid, None)
                     try:
-                        price = float(text.replace(",", ""))
+                        price = parse_amount(text)
                         msg = await game.market_create(code, st["item"], st["qty"], price, pid)
                     except (ValueError, GameError) as e:
                         msg = f"❌ {e}"
@@ -913,7 +937,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "global_tax_amount":
                     _pending.pop(pid, None)
                     try:
-                        amount = float(text.replace(",", "").replace("،", ""))
+                        amount = parse_amount(text)
                         result = await game.global_tax(pid, amount)
                         msg = (
                             f"✅ مالیات سراسری انجام شد\n"
@@ -983,7 +1007,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "user_tax":
                     _pending.pop(pid, None)
                     try:
-                        amount = float(text.replace(",", "").replace("،", ""))
+                        amount = parse_amount(text)
                         msg = await game.admin_tax_user(pid, st["code"], amount)
                     except (ValueError, GameError) as e:
                         msg = f"❌ {e}"
@@ -1111,7 +1135,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 if kind == "hacker_admin_treasury":
                     try:
-                        amt = float(text.strip().replace(",", "").replace("،", ""))
+                        amt = parse_amount(text)
                         msg = await game.hacker.admin_set_treasury(pid, amt)
                         _pending.pop(pid, None)
                         await reply(message, msg, ik([[("🎭 پنل هکر", "ng:ohack")]]))
