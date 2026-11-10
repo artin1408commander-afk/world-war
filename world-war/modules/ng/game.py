@@ -1443,64 +1443,48 @@ class Game:
         return f"✅ کول‌داون حمله بازیکنان: {seconds} ثانیه ({seconds/60:.1f} دقیقه). سازمان ملل بدون کول‌داون است."
 
     PLAYER_FAST_ATTACK_CD_SEC = 30
-    PLAYER_FAST_ATTACK_FLAG = "fast_attack_cd"
 
     async def ensure_player_flags_table(self) -> None:
+        """ng_player_flags is per-player (alliance exit, shop penalty, fast attack CD).
+
+        Existing schema (migration 018):
+          player_id PK, shop_penalty_until, last_alliance_exit_at, last_exit_alliance_id
+        We only ADD fast_attack_cd column — never replace the table.
+        """
         try:
             await self.db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ng_player_flags (
-                    player_id INTEGER NOT NULL,
-                    flag TEXT NOT NULL,
-                    value TEXT NOT NULL DEFAULT '1',
-                    updated_at TEXT,
-                    PRIMARY KEY (player_id, flag)
+                    player_id INTEGER PRIMARY KEY,
+                    shop_penalty_until TEXT,
+                    last_alliance_exit_at TEXT,
+                    last_exit_alliance_id INTEGER,
+                    fast_attack_cd INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
         except Exception:
-            log.exception("ensure_player_flags_table")
-
-    async def get_player_flag(self, player_id: int, flag: str) -> str | None:
-        await self.ensure_player_flags_table()
-        row = await self.db.fetchrow(
-            "SELECT value FROM ng_player_flags WHERE player_id=$1 AND flag=$2",
-            (int(player_id), str(flag)),
-        )
-        if not row:
-            return None
-        return str(row.get("value") or "")
-
-    async def set_player_flag(self, player_id: int, flag: str, value: str | None) -> None:
-        await self.ensure_player_flags_table()
-        pid = int(player_id)
-        fl = str(flag)
-        if value is None or str(value) in ("", "0", "false", "False", "off"):
-            await self.db.execute(
-                "DELETE FROM ng_player_flags WHERE player_id=$1 AND flag=$2",
-                (pid, fl),
-            )
-            return
-        now = datetime.now(timezone.utc).isoformat()
-        exists = await self.db.fetchrow(
-            "SELECT player_id FROM ng_player_flags WHERE player_id=$1 AND flag=$2",
-            (pid, fl),
-        )
-        if exists:
-            await self.db.execute(
-                "UPDATE ng_player_flags SET value=$1, updated_at=$2 WHERE player_id=$3 AND flag=$4",
-                (str(value), now, pid, fl),
-            )
-        else:
-            await self.db.execute(
-                "INSERT INTO ng_player_flags (player_id, flag, value, updated_at) VALUES ($1,$2,$3,$4)",
-                (pid, fl, str(value), now),
-            )
+            log.exception("ensure_player_flags_table create")
+        # Compatible upgrade for already-existing rows/tables
+        for stmt in (
+            "ALTER TABLE ng_player_flags ADD COLUMN shop_penalty_until TEXT",
+            "ALTER TABLE ng_player_flags ADD COLUMN last_alliance_exit_at TEXT",
+            "ALTER TABLE ng_player_flags ADD COLUMN last_exit_alliance_id INTEGER",
+            "ALTER TABLE ng_player_flags ADD COLUMN fast_attack_cd INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                await self.db.execute(stmt)
+            except Exception:
+                pass
 
     async def has_fast_attack_cd(self, player_id: int) -> bool:
         try:
-            v = await self.get_player_flag(int(player_id), self.PLAYER_FAST_ATTACK_FLAG)
-            return str(v or "") in ("1", "true", "on", "yes")
+            await self.ensure_player_flags_table()
+            row = await self.db.fetchrow(
+                "SELECT fast_attack_cd FROM ng_player_flags WHERE player_id=$1",
+                (int(player_id),),
+            )
+            return int((row or {}).get("fast_attack_cd") or 0) == 1
         except Exception:
             log.exception("has_fast_attack_cd")
             return False
@@ -1512,11 +1496,27 @@ class Game:
         p = await self.db.fetchrow("SELECT player_id FROM ng_players WHERE player_id=$1", (tid,))
         if not p:
             raise GameError("بازیکن یافت نشد")
-        await self.set_player_flag(tid, self.PLAYER_FAST_ATTACK_FLAG, "1" if enabled else None)
+        await self.ensure_player_flags_table()
+        flag = 1 if enabled else 0
+        exists = await self.db.fetchrow(
+            "SELECT player_id FROM ng_player_flags WHERE player_id=$1", (tid,)
+        )
+        if exists:
+            await self.db.execute(
+                "UPDATE ng_player_flags SET fast_attack_cd=$1 WHERE player_id=$2",
+                (flag, tid),
+            )
+        else:
+            await self.db.execute(
+                "INSERT INTO ng_player_flags (player_id, fast_attack_cd) VALUES ($1,$2)",
+                (tid, flag),
+            )
         await self.admin_log(actor, "fast_attack_cd", f"{tid}={'on' if enabled else 'off'}")
         if enabled:
             return (
-                f"✅ کول‌داون سریع ۳۰ ثانیه‌ای برای بازیکن {tid} روشن شد." + chr(10) + "حملات عادی و اتمی این بازیکن بعد از هر حمله فقط ۳۰ ثانیه صبر نیاز دارند."
+                f"✅ کول‌داون سریع ۳۰ ثانیه‌ای برای بازیکن {tid} روشن شد."
+                + chr(10)
+                + "حملات عادی و اتمی این بازیکن بعد از هر حمله فقط ۳۰ ثانیه صبر نیاز دارند."
             )
         return f"✅ کول‌داون سریع ۳۰ ثانیه‌ای برای بازیکن {tid} خاموش شد (کول‌داون عادی جهان)."
 
