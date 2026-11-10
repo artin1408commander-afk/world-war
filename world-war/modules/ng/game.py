@@ -1498,8 +1498,12 @@ class Game:
             )
 
     async def has_fast_attack_cd(self, player_id: int) -> bool:
-        v = await self.get_player_flag(int(player_id), self.PLAYER_FAST_ATTACK_FLAG)
-        return str(v or "") in ("1", "true", "on", "yes")
+        try:
+            v = await self.get_player_flag(int(player_id), self.PLAYER_FAST_ATTACK_FLAG)
+            return str(v or "") in ("1", "true", "on", "yes")
+        except Exception:
+            log.exception("has_fast_attack_cd")
+            return False
 
     async def set_fast_attack_cd(self, actor: int, target_player_id: int, enabled: bool) -> str:
         if not self.is_owner(actor):

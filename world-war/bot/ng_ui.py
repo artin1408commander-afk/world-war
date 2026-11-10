@@ -4287,29 +4287,19 @@ def register_handlers(bot, app_ctx: dict):
                 )
                 return
 
-            if data.startswith("ng:ou:"):
-                tid = int(data.split(":")[-1])
-                try:
-                    card = await game.player_admin_card(tid)
-                except GameError as e:
-                    await out(f"❌ {e}")
-                    return
-                p = await game.db.fetchrow("SELECT country_code FROM ng_players WHERE player_id=$1", (tid,))
-                code = (p or {}).get("country_code") or ""
-                extra_hack = []
-                if False:
-                    extra_hack = []
+            async def _owner_player_profile_kb(tid: int):
                 fast_on = False
                 try:
-                    fast_on = await game.has_fast_attack_cd(tid)
+                    fast_on = await game.has_fast_attack_cd(int(tid))
                 except Exception:
+                    log.exception("has_fast_attack_cd profile")
                     fast_on = False
-                cd_btn = (
-                    [("⚡ کول‌داون ۳۰ث: روشن است — خاموش", f"ng:oucd30off:{tid}")]
+                cd_row = (
+                    [("⚡ CD30 روشن — خاموش کن", f"ng:oucd30off:{tid}")]
                     if fast_on
-                    else [("⚡ کول‌داون ۳۰ث: خاموش — روشن کن", f"ng:oucd30on:{tid}")]
+                    else [("⚡ CD30 خاموش — روشن کن", f"ng:oucd30on:{tid}")]
                 )
-                rows = extra_hack + [
+                return [
                     [("🚫 بن", f"ng:ouban:{tid}"), ("✅ آن‌بن", f"ng:ouunban:{tid}")],
                     [("📦 دارایی‌ها", f"ng:ouinv:{tid}"), ("💰 پول", f"ng:oum:{tid}")],
                     [("NPT وضعیت", f"ng:ounpt:{tid}")],
@@ -4318,7 +4308,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("💵 دادن پول", f"ng:ougive:{tid}"), ("💸 گرفتن پول", f"ng:outake:{tid}")],
                     [("🧾 مالیات از کاربر", f"ng:outax:{tid}")],
                     [("🧬 جان ×۲ روشن", f"ng:oudblon:{tid}"), ("🧬 جان ×۲ خاموش", f"ng:oudbloff:{tid}")],
-                ] + cd_btn + [
+                    cd_row[0],
                     [("⏱ رفع محدودیت ۳۰دقیقه", f"ng:dcd:{tid}")],
                     [("♻️ ریکاوری ۶ ساعته", f"ng:orec:{tid}")],
                     [("🪖 تنظیم تجهیزات", f"ng:oueq:{tid}")],
@@ -4326,7 +4316,56 @@ def register_handlers(bot, app_ctx: dict):
                     [("♻️ ریست کردن کاربر", f"ng:oureset:{tid}")],
                     [("⬅️ لیست کاربران", "ng:o:players:0")],
                 ]
-                await out(card, ik(rows))
+
+            if data.startswith("ng:oucd30on:") or data.startswith("ng:oucd30off:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    tid = int(str(data).split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                enable = data.startswith("ng:oucd30on:")
+                try:
+                    await game.ensure_player_flags_table()
+                    msg = await game.set_fast_attack_cd(pid, tid, enable)
+                    try:
+                        card = await game.player_admin_card(tid)
+                    except Exception:
+                        log.exception("profile after cd toggle")
+                        card = ""
+                    body = msg if not card else (msg + chr(10) + chr(10) + card)
+                    await out(body, ik(await _owner_player_profile_kb(tid)), force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("oucd30 toggle")
+                    await out(f"❌ خطا در کول‌داون ۳۰ث: {e}", force_new=True)
+                return
+
+            if data.startswith("ng:ou:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    tid = int(str(data).split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                try:
+                    try:
+                        await game.ensure_player_flags_table()
+                    except Exception:
+                        pass
+                    card = await game.player_admin_card(tid)
+                    rows = await _owner_player_profile_kb(tid)
+                    await out(card, ik(rows), force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("open player profile ng:ou tid=%s", data)
+                    await out(f"❌ خطا در باز کردن پروفایل: {e}", force_new=True)
                 return
 
 
