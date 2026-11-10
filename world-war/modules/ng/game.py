@@ -1442,6 +1442,105 @@ class Game:
         await self.admin_log(actor, "attack_cooldown", str(seconds))
         return f"✅ کول‌داون حمله بازیکنان: {seconds} ثانیه ({seconds/60:.1f} دقیقه). سازمان ملل بدون کول‌داون است."
 
+    PLAYER_FAST_ATTACK_CD_SEC = 30
+    PLAYER_FAST_ATTACK_FLAG = "fast_attack_cd"
+
+    async def ensure_player_flags_table(self) -> None:
+        try:
+            await self.db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ng_player_flags (
+                    player_id INTEGER NOT NULL,
+                    flag TEXT NOT NULL,
+                    value TEXT NOT NULL DEFAULT '1',
+                    updated_at TEXT,
+                    PRIMARY KEY (player_id, flag)
+                )
+                """
+            )
+        except Exception:
+            log.exception("ensure_player_flags_table")
+
+    async def get_player_flag(self, player_id: int, flag: str) -> str | None:
+        await self.ensure_player_flags_table()
+        row = await self.db.fetchrow(
+            "SELECT value FROM ng_player_flags WHERE player_id=$1 AND flag=$2",
+            (int(player_id), str(flag)),
+        )
+        if not row:
+            return None
+        return str(row.get("value") or "")
+
+    async def set_player_flag(self, player_id: int, flag: str, value: str | None) -> None:
+        await self.ensure_player_flags_table()
+        pid = int(player_id)
+        fl = str(flag)
+        if value is None or str(value) in ("", "0", "false", "False", "off"):
+            await self.db.execute(
+                "DELETE FROM ng_player_flags WHERE player_id=$1 AND flag=$2",
+                (pid, fl),
+            )
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        exists = await self.db.fetchrow(
+            "SELECT player_id FROM ng_player_flags WHERE player_id=$1 AND flag=$2",
+            (pid, fl),
+        )
+        if exists:
+            await self.db.execute(
+                "UPDATE ng_player_flags SET value=$1, updated_at=$2 WHERE player_id=$3 AND flag=$4",
+                (str(value), now, pid, fl),
+            )
+        else:
+            await self.db.execute(
+                "INSERT INTO ng_player_flags (player_id, flag, value, updated_at) VALUES ($1,$2,$3,$4)",
+                (pid, fl, str(value), now),
+            )
+
+    async def has_fast_attack_cd(self, player_id: int) -> bool:
+        v = await self.get_player_flag(int(player_id), self.PLAYER_FAST_ATTACK_FLAG)
+        return str(v or "") in ("1", "true", "on", "yes")
+
+    async def set_fast_attack_cd(self, actor: int, target_player_id: int, enabled: bool) -> str:
+        if not self.is_owner(actor):
+            raise GameError("فقط مالک")
+        tid = int(target_player_id)
+        p = await self.db.fetchrow("SELECT player_id FROM ng_players WHERE player_id=$1", (tid,))
+        if not p:
+            raise GameError("بازیکن یافت نشد")
+        await self.set_player_flag(tid, self.PLAYER_FAST_ATTACK_FLAG, "1" if enabled else None)
+        await self.admin_log(actor, "fast_attack_cd", f"{tid}={'on' if enabled else 'off'}")
+        if enabled:
+            return (
+                f"✅ کول‌داون سریع ۳۰ ثانیه‌ای برای بازیکن {tid} روشن شد.\n"
+                "حملات عادی و اتمی این بازیکن بعد از هر حمله فقط ۳۰ ثانیه صبر نیاز دارند."
+            )
+        return f"✅ کول‌داون سریع ۳۰ ثانیه‌ای برای بازیکن {tid} خاموش شد (کول‌داون عادی جهان)."
+
+    async def effective_attack_cooldown_sec(self, code: str | None = None, player_id: int | None = None) -> int:
+        """Global cooldown, or 30s if owner enabled fast CD for that player."""
+        base = await self.attack_cooldown_sec()
+        pid = player_id
+        if pid is None and code:
+            try:
+                if self.is_un_country(code):
+                    return 0
+                row = await self.db.fetchrow(
+                    "SELECT owner_player_id FROM ng_countries WHERE country_code=$1",
+                    (code,),
+                )
+                if row and row.get("owner_player_id"):
+                    pid = int(row["owner_player_id"])
+            except Exception:
+                pid = None
+        if pid is not None:
+            try:
+                if await self.has_fast_attack_cd(int(pid)):
+                    return int(self.PLAYER_FAST_ATTACK_CD_SEC)
+            except Exception:
+                log.exception("effective_attack_cooldown_sec")
+        return int(base)
+
     BASE_DAILY_GRANT = 70_000_000  # fixed daily grant per owned country (Tehran day)
     REF_INVITEE_REWARD = 30_000_000
     REF_REFERRER_REWARD = 30_000_000
@@ -1844,7 +1943,7 @@ class Game:
                 if last.tzinfo is None:
                     last = last.replace(tzinfo=timezone.utc)
                 elapsed = (datetime.now(timezone.utc) - last).total_seconds()
-                need = await self.attack_cooldown_sec()
+                need = await self.effective_attack_cooldown_sec(code)
                 if elapsed < need:
                     return False, f"محدودیت حمله: {int(need - elapsed)} ثانیه باقی مانده."
             except Exception:
@@ -1942,8 +2041,9 @@ class Game:
                     if last.tzinfo is None:
                         last = last.replace(tzinfo=timezone.utc)
                     elapsed = (now - last).total_seconds()
-                    if elapsed < await self.attack_cooldown_sec():
-                        left = int(await self.attack_cooldown_sec() - elapsed)
+                    need_cd = await self.effective_attack_cooldown_sec(attacker)
+                    if elapsed < need_cd:
+                        left = int(need_cd - elapsed)
                         raise GameError(f"محدودیت حمله: {left} ثانیه باقی مانده است.")
                 except GameError:
                     raise
@@ -4844,8 +4944,9 @@ class Game:
                     if last.tzinfo is None:
                         last = last.replace(tzinfo=timezone.utc)
                     elapsed = (now - last).total_seconds()
-                    if elapsed < await self.attack_cooldown_sec():
-                        raise GameError(f"محدودیت حمله: {int(await self.attack_cooldown_sec() - elapsed)} ثانیه.")
+                    need_cd = await self.effective_attack_cooldown_sec(attacker)
+                    if elapsed < need_cd:
+                        raise GameError(f"محدودیت حمله: {int(need_cd - elapsed)} ثانیه.")
                 except GameError:
                     raise
                 except Exception:
@@ -5397,6 +5498,14 @@ class Game:
         ]
         if start_count:
             lines.append(f"تعداد /start: {start_count}")
+        try:
+            if await self.has_fast_attack_cd(target_id):
+                lines.append("⚡ کول‌داون حمله: ۳۰ ثانیه (فعال)")
+            else:
+                base = await self.attack_cooldown_sec()
+                lines.append(f"⏱ کول‌داون حمله: {base} ثانیه (عادی)")
+        except Exception:
+            log.exception("fast attack cd status")
         try:
             lines.append("")
             lines.append(await self.legendary.admin_player_legendary_block(target_id))

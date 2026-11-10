@@ -4299,6 +4299,16 @@ def register_handlers(bot, app_ctx: dict):
                 extra_hack = []
                 if False:
                     extra_hack = []
+                fast_on = False
+                try:
+                    fast_on = await game.has_fast_attack_cd(tid)
+                except Exception:
+                    fast_on = False
+                cd_btn = (
+                    [("⚡ کول‌داون ۳۰ث: روشن است — خاموش", f"ng:oucd30off:{tid}")]
+                    if fast_on
+                    else [("⚡ کول‌داون ۳۰ث: خاموش — روشن کن", f"ng:oucd30on:{tid}")]
+                )
                 rows = extra_hack + [
                     [("🚫 بن", f"ng:ouban:{tid}"), ("✅ آن‌بن", f"ng:ouunban:{tid}")],
                     [("📦 دارایی‌ها", f"ng:ouinv:{tid}"), ("💰 پول", f"ng:oum:{tid}")],
@@ -4308,6 +4318,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("💵 دادن پول", f"ng:ougive:{tid}"), ("💸 گرفتن پول", f"ng:outake:{tid}")],
                     [("🧾 مالیات از کاربر", f"ng:outax:{tid}")],
                     [("🧬 جان ×۲ روشن", f"ng:oudblon:{tid}"), ("🧬 جان ×۲ خاموش", f"ng:oudbloff:{tid}")],
+                ] + cd_btn + [
                     [("⏱ رفع محدودیت ۳۰دقیقه", f"ng:dcd:{tid}")],
                     [("♻️ ریکاوری ۶ ساعته", f"ng:orec:{tid}")],
                     [("🪖 تنظیم تجهیزات", f"ng:oueq:{tid}")],
