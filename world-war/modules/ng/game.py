@@ -37,6 +37,22 @@ def is_un_code(code: str | None) -> bool:
 RECOVERY_WINDOW_SEC = 6 * 60 * 60  # 6 hours owner recovery window
 # Shop sells nuke_bomb; older workshop used item_atom_bomb — both accepted
 ATOM_BOMB_CODES = ("nuke_bomb", "item_atom_bomb")
+LETHAL_HP_RATIO = 0.05
+LETHAL_HP_ABS = 15.0
+
+
+def _is_lethal_hp(hp, max_hp) -> bool:
+    try:
+        hp = float(hp or 0)
+        max_hp = float(max_hp or 1000) or 1000.0
+    except Exception:
+        return True
+    if hp <= 0 or hp <= LETHAL_HP_ABS:
+        return True
+    if hp <= max_hp * LETHAL_HP_RATIO:
+        return True
+    return False
+
 
 
 class GameError(Exception):
@@ -574,6 +590,62 @@ class Game:
             return rows
         return [r for r in rows if not is_un_code(r.get("country_code"))]
 
+
+    async def cleanup_zombie_owned_countries(self) -> int:
+        """Free owned countries stuck near 0 HP so they leave attack/owner lists."""
+        rows = await self.db.fetch(
+            """
+            SELECT country_code, owner_player_id, hp, max_hp, treasury
+            FROM ng_countries
+            WHERE owner_player_id IS NOT NULL AND country_code <> $1
+            """,
+            (UN_CODE,),
+        )
+        n = 0
+        now = datetime.now(timezone.utc)
+        for r in rows:
+            if not _is_lethal_hp(r.get("hp"), r.get("max_hp")):
+                continue
+            code = r["country_code"]
+            prev = r.get("owner_player_id")
+            try:
+                async with self.db.transaction() as tx:
+                    try:
+                        if prev:
+                            await self._capture_destroy_snapshot(
+                                tx, int(prev), code,
+                                treasury_override=float(r.get("treasury") or 0),
+                                max_hp_override=float(r.get("max_hp") or 1000),
+                                clear_assets=True,
+                            )
+                    except Exception:
+                        log.exception("zombie snapshot %s", code)
+                    await tx.execute(
+                        """
+                        UPDATE ng_countries
+                        SET owner_player_id=NULL, claimed_at=NULL, is_destroyed=0,
+                            hp=COALESCE(NULLIF(max_hp,0),1000),
+                            daily_income=0, daily_expense=0
+                        WHERE country_code=$1
+                        """,
+                        (code,),
+                    )
+                    try:
+                        await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (code,))
+                    except Exception:
+                        pass
+                    if prev:
+                        until = (now + timedelta(seconds=int(DESTROY_WAIT_SEC or 1800))).isoformat()
+                        await tx.execute(
+                            "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=$1 WHERE player_id=$2",
+                            (until, int(prev)),
+                        )
+                n += 1
+                log.info("freed zombie country %s prev_owner=%s", code, prev)
+            except Exception:
+                log.exception("cleanup zombie %s", code)
+        return n
+
     async def list_attack_targets(self, attacker_code: str | None, page: int = 0, page_size: int = 25) -> tuple[list[dict], int]:
         """All currently owned, living countries except attacker — always live from DB."""
         try:
@@ -586,11 +658,16 @@ class Game:
             )
         except Exception:
             pass
+        try:
+            await self.cleanup_zombie_owned_countries()
+        except Exception:
+            log.exception("cleanup zombies list_attack_targets")
         rows = await self.db.fetch(
             """
             SELECT * FROM ng_countries
             WHERE owner_player_id IS NOT NULL
               AND COALESCE(is_destroyed,0)=0
+              AND COALESCE(hp, 0) > 15
               AND country_code <> $1
               AND country_code <> $2
             ORDER BY name_fa
@@ -2001,7 +2078,10 @@ class Game:
                 "victory": victory,
             }
 
+            max_hp_d = float(d.get("max_hp") or 1000) or 1000.0
             new_hp = max(0.0, float(d["hp"]) - damage)
+            if _is_lethal_hp(new_hp, max_hp_d):
+                new_hp = 0.0
             await tx.execute(
                 "UPDATE ng_countries SET hp=$1 WHERE country_code=$2", (new_hp, defender)
             )
@@ -2078,8 +2158,9 @@ class Game:
                     (now.isoformat(), seq, attacker),
                 )
 
-            destroyed = new_hp <= 0
+            destroyed = _is_lethal_hp(new_hp, max_hp_d)
             if destroyed:
+                new_hp = 0.0
                 try:
                     inv_d = await tx.fetch(
                         "SELECT * FROM ng_inventory WHERE country_code=$1", (defender,)
@@ -4778,7 +4859,10 @@ class Game:
                 pass
             intercepted = damage * cover
             damage = max(damage * 0.15, damage - intercepted)
+            max_hp_d = float(d.get("max_hp") or 1000) or 1000.0
             new_hp = max(0.0, float(d["hp"]) - damage)
+            if _is_lethal_hp(new_hp, max_hp_d):
+                new_hp = 0.0
             await tx.execute(
                 "UPDATE ng_countries SET hp=$1 WHERE country_code=$2", (new_hp, defender)
             )
@@ -4800,8 +4884,9 @@ class Game:
                     "UPDATE ng_war_state SET last_attack_at=$1, attack_seq=$2 WHERE country_code=$3",
                     (now.isoformat(), seq, attacker),
                 )
-            destroyed = new_hp <= 0
+            destroyed = _is_lethal_hp(new_hp, max_hp_d)
             if destroyed:
+                new_hp = 0.0
                 try:
                     await self._apply_defeat_in_tx(
                         tx,
@@ -4812,7 +4897,35 @@ class Game:
                         a_treas=0,
                     )
                 except Exception:
-                    log.exception("nuclear destroy")
+                    log.exception("nuclear destroy primary")
+                try:
+                    chk = await tx.fetchrow(
+                        "SELECT owner_player_id FROM ng_countries WHERE country_code=$1",
+                        (defender,),
+                    )
+                    if chk and chk.get("owner_player_id") is not None:
+                        prev = int(chk["owner_player_id"])
+                        await tx.execute(
+                            """
+                            UPDATE ng_countries
+                            SET owner_player_id=NULL, claimed_at=NULL, is_destroyed=0,
+                                hp=COALESCE(NULLIF(max_hp,0),1000),
+                                daily_income=0, daily_expense=0
+                            WHERE country_code=$1
+                            """,
+                            (defender,),
+                        )
+                        until = (now + timedelta(seconds=int(DESTROY_WAIT_SEC or 1800))).isoformat()
+                        await tx.execute(
+                            "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=$1 WHERE player_id=$2",
+                            (until, prev),
+                        )
+                        try:
+                            await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (defender,))
+                        except Exception:
+                            pass
+                except Exception:
+                    log.exception("nuclear force free")
         atk_name = await self.country_label(attacker)
         def_name = await self.country_label(defender)
         report = (
@@ -4825,8 +4938,11 @@ class Game:
         )
         await self.log_activity("attack", report.replace("\n", " | "), attacker, pid)
         await self.broadcast_log("attack", report)
-        if new_hp <= 0:
-            await self.alliances.on_country_destroyed(defender)
+        if destroyed:
+            try:
+                await self.alliances.on_country_destroyed(defender)
+            except Exception:
+                log.exception("alliance on nuclear destroy")
             await self.broadcast_log("destroy", f"💥 کشور {def_name} در اثر حمله اتمی نابود شد.")
         return report
 
