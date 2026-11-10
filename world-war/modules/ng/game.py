@@ -5543,8 +5543,18 @@ class Game:
         )
 
 
-    async def admin_set_hp(self, actor: int, target_player_id: int, hp: float) -> str:
-        """Owner set HP with no upper cap — max_hp grows if needed (e.g. 3000/3000)."""
+    async def admin_set_hp(
+        self,
+        actor: int,
+        target_player_id: int,
+        hp: float | str,
+        max_hp: float | None = None,
+    ) -> str:
+        """Owner set HP/max without upper limit.
+
+        Preferred owner chat format: "300/1000" or "4000/4000".
+        Single number still works (max raised if needed).
+        """
         if not self.is_owner(actor):
             raise GameError("مجاز نیستید")
         code = await self.resolve_country_for_player(int(target_player_id))
@@ -5555,26 +5565,50 @@ class Game:
         )
         if not c:
             raise GameError("کشور یافت نشد")
-        max_hp = float(c.get("max_hp") or 1000)
-        if max_hp <= 0:
-            max_hp = 1000.0
+        cur_max = float(c.get("max_hp") or 1000)
+        if cur_max <= 0:
+            cur_max = 1000.0
+
+        if isinstance(hp, str):
+            raw = str(hp).strip()
+            for ch in ("‎", "‏", "​", "‌", "‍", "﻿", " "):
+                raw = raw.replace(ch, "")
+            raw = raw.replace(",", "").replace("،", "").replace(" ", "")
+            if "/" in raw or "／" in raw:
+                parts = raw.replace("／", "/").split("/", 1)
+                try:
+                    hp_v = float(parts[0].strip())
+                    max_v = float(parts[1].strip())
+                except Exception:
+                    raise GameError("فرمت نامعتبر. مثال: 300/1000")
+                hp = hp_v
+                max_hp = max_v
+            else:
+                try:
+                    hp = float(raw)
+                except Exception:
+                    raise GameError("فرمت نامعتبر. مثال: 300/1000")
+
         hp = float(hp)
-        if hp < 0:
-            raise GameError("HP نمی‌تواند منفی باشد")
-        # Unlimited: if requested HP exceeds max, raise max_hp to match
-        new_max = max_hp
-        if hp > max_hp:
+        if max_hp is None:
+            new_max = max(cur_max, hp) if hp > cur_max else cur_max
+        else:
+            new_max = float(max_hp)
+
+        if hp < 0 or new_max < 0:
+            raise GameError("HP و سقف نمی‌توانند منفی باشند")
+        if new_max <= 0:
+            raise GameError("سقف HP باید بیشتر از صفر باشد")
+        if hp > new_max:
             new_max = hp
+
         await self.db.execute(
             "UPDATE ng_countries SET hp=$1, max_hp=$2, is_destroyed=0 WHERE country_code=$3",
             (hp, new_max, code),
         )
         await self.admin_log(actor, "set_hp", f"{code}={hp}/{new_max}")
         label = await self.country_label(code)
-        return (
-            f"✅ HP «{label}» روی {int(hp)} / {int(new_max)} تنظیم شد."
-            + (" (سقف سلامت هم افزایش یافت)" if new_max > max_hp else "")
-        )
+        return f"✅ HP «{label}» روی {int(hp)} / {int(new_max)} تنظیم شد."
 
 
     async def admin_set_npt(self, actor: int, code: str, member: bool) -> str:

@@ -1151,9 +1151,11 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "owner_set_hp":
                     try:
                         raw = text.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
-                        hp = float(raw.replace(",", "").replace("،", "").replace(" ", ""))
+                        for ch in ("‎", "‏", "​", "‌", "‍", "﻿", " "):
+                            raw = raw.replace(ch, "")
+                        raw = raw.replace(",", "").replace("،", "").replace(" ", "")
                         tid = int(st.get("target"))
-                        msg = await game.admin_set_hp(pid, tid, hp)
+                        msg = await game.admin_set_hp(pid, tid, raw)
                         _pending.pop(pid, None)
                         await reply(
                             message,
@@ -1167,12 +1169,16 @@ def register_handlers(bot, app_ctx: dict):
                     except GameError as e:
                         await reply(
                             message,
-                            f"❌ {e}" + "\n" + "دوباره عدد HP را بفرستید یا لغو کنید.",
+                            f"❌ {e}\nفرمت: فعلی/سقف مثل 300/1000 یا 4000/4000",
                             ik([cancel_row()]),
                         )
                     except Exception as e:
                         log.exception("owner_set_hp")
-                        await reply(message, "❌ عدد HP نامعتبر است. مثال: 850", ik([cancel_row()]))
+                        await reply(
+                            message,
+                            "❌ فرمت نامعتبر است.\nمثال: 300/1000 یا 4000/4000",
+                            ik([cancel_row()]),
+                        )
                     return
 
             # ---- main menu ----
@@ -4272,8 +4278,11 @@ def register_handlers(bot, app_ctx: dict):
                     + f"بازیکن: {tid}" + "\n"
                     + f"کشور: {cname}" + "\n"
                     + f"HP فعلی: {cur_hp} / {max_hp}" + "\n\n"
-                    + "عدد HP جدید را بفرستید (۰ تا حداکثر)." + "\n"
-                    + "مثال: 850",
+                    + "فرمت را این‌طور بفرستید:" + "\n"
+                    + "فعلی/سقف" + "\n"
+                    + "مثال: 300/1000" + "\n"
+                    + "مثال: 4000/4000" + "\n"
+                    + "(بدون محدودیت عددی)",
                     ik([cancel_row()]),
                 )
                 return
