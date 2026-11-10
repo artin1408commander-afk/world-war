@@ -3571,18 +3571,26 @@ def register_handlers(bot, app_ctx: dict):
                         (tid,),
                     )
                     if not snap:
-                        await out("❌ اسنپ‌شات نابودی نیست. ریکاوری فقط تا ۳ ساعت بعد از نابودی ممکن است.", ik([[("👤 بازگشت", f"ng:ou:{tid}")]]))
+                        await out("❌ اسنپ‌شات نابودی نیست. ریکاوری فقط تا ۶ ساعت بعد از نابودی ممکن است.", ik([[("👤 بازگشت", f"ng:ou:{tid}")]]))
                         return
                     cname = await game.country_label(snap["country_code"])
-                    hp_half = int(float(snap.get("max_hp") or 1000) / 2)
+                    hp_full = int(float(snap.get("max_hp") or 1000) or 1000)
+                    hp_full = int(float(snap.get("max_hp") or 1000) or 1000)
                     treas = int(float(snap.get("treasury") or 0))
+                    inv_n = 0
+                    try:
+                        inv_n = len(__import__("json").loads(snap.get("inventory_json") or "[]"))
+                    except Exception:
+                        inv_n = 0
                     body = (
-                        "♻️ ریکاوری ۳ ساعته\n\n"
+                        "♻️ ریکاوری ۶ ساعته\n\n"
                         f"بازیکن: {tid}\n"
                         f"کشور: {cname}\n"
-                        f"خزانه: {treas:,}\n"
-                        f"HP بعد از ریکاوری: {hp_half}\n"
-                        f"زمان نابودی: {snap.get('destroyed_at')}"
+                        f"خزانه بازگردانی: {treas:,}\n"
+                        f"تجهیزات: {inv_n} نوع\n"
+                        f"HP بعد از ریکاوری: {hp_full} (کامل)\n"
+                        f"زمان نابودی: {snap.get('destroyed_at')}\n\n"
+                        "همه چیز به حالت اوج (قبل از غنیمت) برمی‌گردد."
                     )
                     await out(body, ik([[("✅ تأیید ریکاوری", f"ng:orecgo:{tid}"), ("❌ انصراف", f"ng:ou:{tid}")]]))
                 except Exception as e:
@@ -4186,7 +4194,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("🧾 مالیات از کاربر", f"ng:outax:{tid}")],
                     [("🧬 جان ×۲ روشن", f"ng:oudblon:{tid}"), ("🧬 جان ×۲ خاموش", f"ng:oudbloff:{tid}")],
                     [("⏱ رفع محدودیت ۳۰دقیقه", f"ng:dcd:{tid}")],
-                    [("♻️ ریکاوری ۳ ساعته", f"ng:orec:{tid}")],
+                    [("♻️ ریکاوری ۶ ساعته", f"ng:orec:{tid}")],
                     [("🪖 تنظیم تجهیزات", f"ng:oueq:{tid}")],
                     [("🎁 آیتم لجندری", f"ng:olegp:{tid}")],
                     [("♻️ ریست کردن کاربر", f"ng:oureset:{tid}")],
