@@ -117,19 +117,28 @@ async def daily_loop(game: Game):
 
 
 async def group_log_loop(game: Game, bot):
+    """Send only NEW group logs in near-real-time. Never flush historical backlog."""
+    since = getattr(game, "_group_log_since", None)
     while True:
         try:
-            rows = await game.pop_group_logs(10)
+            rows = await game.pop_group_logs(15, since_iso=since)
             for r in rows:
-                text = r.get("summary") or ""
+                text = (r.get("summary") or "").strip()
                 if not text:
                     continue
                 kind = r.get("kind") or ""
+                # Skip ancient rows even if filter missed (created_at missing/malformed)
+                try:
+                    created = str(r.get("created_at") or "")
+                    if since and created and created < since:
+                        continue
+                except Exception:
+                    pass
                 try:
                     msg = None
                     if hasattr(bot, "send_message"):
                         msg = await bot.send_message(game.group_id or MAIN_GROUP, text[:3500])
-                    # Pin UN statements
+                    # Pin UN statements / nightly only
                     if kind in ("group_pin_statement", "nightly_report", "group_pin") and msg is not None:
                         mid = getattr(msg, "message_id", None) or getattr(msg, "id", None)
                         if mid is not None:
@@ -150,10 +159,10 @@ async def group_log_loop(game: Game, bot):
                                 log.warning("could not pin message id=%s kind=%s", mid, kind)
                 except Exception:
                     log.exception("group log send failed")
-                    await game.log_activity(r.get("kind") or "group_log", text)
+                    # do NOT re-queue failures as new activity (avoids spam loops)
         except Exception:
             log.exception("group log loop")
-        await asyncio.sleep(15)
+        await asyncio.sleep(3)
 
 
 async def dm_notice_loop(game: Game, bot):
@@ -233,6 +242,15 @@ async def async_main() -> None:
 
         bot = await create_bot(settings.bale_token)
         register_handlers(bot, {"game": game, "settings": settings, "db": db})
+        # Drop old queued group logs so restart does not spam the group
+        try:
+            from datetime import datetime, timezone
+            dropped = await game.discard_pending_group_logs()
+            game._group_log_since = datetime.now(timezone.utc).isoformat()
+            log.info("group logs: discarded %s stale queued rows; since=%s", dropped, game._group_log_since)
+        except Exception:
+            log.exception("discard stale group logs")
+            game._group_log_since = None
         asyncio.create_task(group_log_loop(game, bot))
         asyncio.create_task(owner_inbox_loop(game, bot, settings.owner_id))
         asyncio.create_task(dm_notice_loop(game, bot))

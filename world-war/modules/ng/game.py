@@ -3385,14 +3385,53 @@ class Game:
         )
         return "درخواست صلح رد شد."
 
-    async def pop_group_logs(self, limit: int = 20) -> list[dict]:
-        rows = await self.db.fetch(
-            "SELECT * FROM ng_activity WHERE kind LIKE 'group_%' ORDER BY id ASC"
-        )
-        rows = rows[:limit]
+    async def discard_pending_group_logs(self) -> int:
+        """Drop queued group_* logs without sending (used on bot startup)."""
+        try:
+            rows = await self.db.fetch(
+                "SELECT id FROM ng_activity WHERE kind LIKE 'group_%'"
+            )
+        except Exception:
+            log.exception("discard_pending_group_logs fetch")
+            return 0
+        n = 0
         for r in rows:
-            await self.db.execute("DELETE FROM ng_activity WHERE id=$1", (r["id"],))
-        return rows
+            try:
+                await self.db.execute("DELETE FROM ng_activity WHERE id=$1", (r["id"],))
+                n += 1
+            except Exception:
+                log.exception("discard group log id=%s", r.get("id"))
+        return n
+
+    async def pop_group_logs(self, limit: int = 20, *, since_iso: str | None = None) -> list[dict]:
+        """Pop only fresh group_* logs. Never re-send backlog older than since_iso."""
+        limit = max(1, min(50, int(limit)))
+        try:
+            if since_iso:
+                rows = await self.db.fetch(
+                    """
+                    SELECT * FROM ng_activity
+                    WHERE kind LIKE 'group_%' AND created_at >= $1
+                    ORDER BY id ASC
+                    """,
+                    (since_iso,),
+                )
+            else:
+                rows = await self.db.fetch(
+                    "SELECT * FROM ng_activity WHERE kind LIKE 'group_%' ORDER BY id ASC"
+                )
+        except Exception:
+            log.exception("pop_group_logs")
+            return []
+        rows = list(rows or [])[:limit]
+        out = []
+        for r in rows:
+            try:
+                await self.db.execute("DELETE FROM ng_activity WHERE id=$1", (r["id"],))
+                out.append(r)
+            except Exception:
+                log.exception("pop_group_logs delete id=%s", r.get("id"))
+        return out
 
 
     async def _reload_catalog_prices(self) -> None:
