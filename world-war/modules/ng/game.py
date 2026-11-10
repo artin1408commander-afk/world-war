@@ -1442,7 +1442,7 @@ class Game:
         await self.admin_log(actor, "attack_cooldown", str(seconds))
         return f"✅ کول‌داون حمله بازیکنان: {seconds} ثانیه ({seconds/60:.1f} دقیقه). سازمان ملل بدون کول‌داون است."
 
-    BASE_DAILY_GRANT = 20_000_000  # fixed daily grant per owned country (Tehran day)
+    BASE_DAILY_GRANT = 70_000_000  # fixed daily grant per owned country (Tehran day)
     REF_INVITEE_REWARD = 30_000_000
     REF_REFERRER_REWARD = 30_000_000
     MAX_LOOT_RATIO = 0.08  # max 8% of defender treasury
@@ -3828,7 +3828,7 @@ class Game:
             law_b = await self.control.law_income_bonus(code)
             sat = float(ctrl["satisfaction"])
         except Exception:
-            base, mod, law_b, sat = float(getattr(self, "daily_income_base", 20_000_000.0)), 1.0, 0.0, 70.0
+            base, mod, law_b, sat = float(getattr(self, "daily_income_base", 70_000_000.0)), 1.0, 0.0, 70.0
         net = float(c["daily_income"]) - float(c["daily_expense"])
         est = (base + law_b + net) * mod
         title = await self.country_label(code)
@@ -4802,6 +4802,7 @@ class Game:
         damage = 0.0
         new_hp = 0.0
         pct = 0.0
+        shield_note = ""
         un_atk = self.is_un_force(attacker, pid)
         hack_atk = self.is_hacker_force(attacker, pid)
         free_atk = un_atk or hack_atk
@@ -4890,7 +4891,10 @@ class Game:
             pct = random.uniform(0.20, 0.38)
             damage = float(d.get("max_hp") or d.get("hp") or 1000) * pct
             cover, _ = await self.defense_coverage(defender, "nuclear")
-            # anti-nuke shield boosts intercept hard
+            # Anti-nuke shield: NEVER affected by cyber hack; each unit fully absorbs
+            # one nuclear strike and breaks after 3 absorbed hits (durability).
+            shield_blocked = False
+            shield_note = ""
             try:
                 inv_s = await tx.fetchrow(
                     "SELECT quantity FROM ng_inventory WHERE country_code=$1 AND item_code='d_nuke_shield'",
@@ -4898,11 +4902,55 @@ class Game:
                 )
                 shield_q = float((inv_s or {}).get("quantity") or 0)
                 if shield_q > 0:
-                    cover = min(0.92, cover + 0.12 * min(5.0, shield_q))
+                    # Full absorb — cyber disable must not reduce this
+                    shield_blocked = True
+                    intercepted = float(damage)
+                    damage = 0.0
+                    # durability tracking: 3 nuclear hits per unit
+                    wear = await tx.fetchrow(
+                        "SELECT hits FROM ng_nuke_shield_wear WHERE country_code=$1",
+                        (defender,),
+                    )
+                    hits = int((wear or {}).get("hits") or 0) + 1
+                    if wear:
+                        await tx.execute(
+                            "UPDATE ng_nuke_shield_wear SET hits=$1 WHERE country_code=$2",
+                            (hits, defender),
+                        )
+                    else:
+                        await tx.execute(
+                            "INSERT INTO ng_nuke_shield_wear (country_code, hits) VALUES ($1,$2)",
+                            (defender, hits),
+                        )
+                    if hits >= 3:
+                        left = shield_q - 1.0
+                        if left <= 0:
+                            await tx.execute(
+                                "DELETE FROM ng_inventory WHERE country_code=$1 AND item_code='d_nuke_shield'",
+                                (defender,),
+                            )
+                        else:
+                            await tx.execute(
+                                "UPDATE ng_inventory SET quantity=$1 WHERE country_code=$2 AND item_code=$3",
+                                (left, defender, "d_nuke_shield"),
+                            )
+                        await tx.execute(
+                            "UPDATE ng_nuke_shield_wear SET hits=0 WHERE country_code=$1",
+                            (defender,),
+                        )
+                        shield_note = "🛡 پدافند ضد اتم ضربه را کامل گرفت و پس از ۳ ضربه ۱ واحد از بین رفت."
+                    else:
+                        shield_note = f"🛡 پدافند ضد اتم ضربه را کامل گرفت ({hits}/۳ تا فرسایش واحد)."
             except Exception:
+                log.exception("nuke shield absorb")
+                shield_blocked = False
+            if not shield_blocked:
+                intercepted = damage * cover
+                # residual always possible without dedicated anti-nuke
+                damage = max(damage * 0.15, damage - intercepted)
+            else:
+                # damage already 0; keep intercepted for report
                 pass
-            intercepted = damage * cover
-            damage = max(damage * 0.15, damage - intercepted)
             max_hp_d = float(d.get("max_hp") or 1000) or 1000.0
             new_hp = max(0.0, float(d["hp"]) - damage)
             if _is_lethal_hp(new_hp, max_hp_d):
@@ -4980,6 +5028,13 @@ class Game:
             f"سلامت فعلی: {int(new_hp)}/{int(float(d['max_hp']))}\n"
             f"بمب مصرف‌شده: ۱"
         )
+        try:
+            if shield_note:
+                report = report + chr(10) + shield_note
+        except Exception:
+            pass
+        if destroyed:
+            report += chr(10) + chr(10) + "💀 کشور مدافع نابود و آزاد شد."
         try:
             await self.log_activity("attack", report.replace(chr(10), " | "), attacker, pid)
         except Exception:
@@ -5489,6 +5544,7 @@ class Game:
 
 
     async def admin_set_hp(self, actor: int, target_player_id: int, hp: float) -> str:
+        """Owner set HP with no upper cap — max_hp grows if needed (e.g. 3000/3000)."""
         if not self.is_owner(actor):
             raise GameError("مجاز نیستید")
         code = await self.resolve_country_for_player(int(target_player_id))
@@ -5505,16 +5561,20 @@ class Game:
         hp = float(hp)
         if hp < 0:
             raise GameError("HP نمی‌تواند منفی باشد")
-        if hp > max_hp * 2:
-            # soft cap: allow up to 2x max for owner events, but warn
-            raise GameError(f"حداکثر مجاز برای تنظیم: {int(max_hp * 2)}")
+        # Unlimited: if requested HP exceeds max, raise max_hp to match
+        new_max = max_hp
+        if hp > max_hp:
+            new_max = hp
         await self.db.execute(
-            "UPDATE ng_countries SET hp=$1, is_destroyed=0 WHERE country_code=$2",
-            (hp, code),
+            "UPDATE ng_countries SET hp=$1, max_hp=$2, is_destroyed=0 WHERE country_code=$3",
+            (hp, new_max, code),
         )
-        await self.admin_log(actor, "set_hp", f"{code}={hp}/{max_hp}")
+        await self.admin_log(actor, "set_hp", f"{code}={hp}/{new_max}")
         label = await self.country_label(code)
-        return f"✅ HP «{label}» روی {int(hp)} تنظیم شد (حداکثر پایه: {int(max_hp)})."
+        return (
+            f"✅ HP «{label}» روی {int(hp)} / {int(new_max)} تنظیم شد."
+            + (" (سقف سلامت هم افزایش یافت)" if new_max > max_hp else "")
+        )
 
 
     async def admin_set_npt(self, actor: int, code: str, member: bool) -> str:

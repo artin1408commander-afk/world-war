@@ -67,7 +67,7 @@ class ControlService:
                 maritime_open INTEGER NOT NULL DEFAULT 1,
                 internet_on INTEGER NOT NULL DEFAULT 1,
                 satisfaction REAL NOT NULL DEFAULT 70,
-                base_daily_income REAL NOT NULL DEFAULT 20000000,
+                base_daily_income REAL NOT NULL DEFAULT 70000000,
                 leader_crisis_until TEXT,
                 updated_at TEXT
             )""",
@@ -141,7 +141,7 @@ class ControlService:
         if row:
             return row
         # stable random base income 20-25M once
-        base = float(random.randint(20_000_000, 25_000_000))
+        base = float(random.randint(70_000_000, 25_000_000))
         now = datetime.now(timezone.utc).isoformat()
         await self.db.execute(
             """

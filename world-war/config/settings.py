@@ -337,7 +337,7 @@ def load_settings() -> Settings:
         # Game values recovered from source (modules/ng/game.py, alliances.py, donations.py)
         attack_cooldown_sec=_as_int(_get(local, "ATTACK_COOLDOWN_SEC", "120"), 120),
         cyber_hack_cooldown_sec=_as_int(_get(local, "CYBER_HACK_COOLDOWN_SEC", "180"), 180),
-        daily_income_base=_as_float(_get(local, "DAILY_INCOME_BASE", "20000000"), 20_000_000.0),
+        daily_income_base=_as_float(_get(local, "DAILY_INCOME_BASE", "70000000"), 70_000_000.0),
         un_starting_treasury=_as_float(
             _get(local, "UN_STARTING_TREASURY", "200000000"), 200_000_000.0
         ),
