@@ -3046,15 +3046,26 @@ def register_handlers(bot, app_ctx: dict):
                         main_kb(owner),
                     )
                     try:
-                        if game.owner_id:
-                            body = game.donations.owner_review_text(drow)
-                            await bot.send_message(
-                                int(game.owner_id),
-                                body,
-                                components=ik([
-                                    [("✅ تأیید", f"ng:donrev:ok:{drow['id']}"), ("❌ رد", f"ng:donrev:no:{drow['id']}")],
-                                ]),
-                            )
+                        body = game.donations.owner_review_text(drow)
+                        kb = ik([
+                            [("✅ تأیید", f"ng:donrev:ok:{drow['id']}"), ("❌ رد", f"ng:donrev:no:{drow['id']}")],
+                        ])
+                        owner_ids = set()
+                        try:
+                            if game.owner_id:
+                                owner_ids.add(int(game.owner_id))
+                        except Exception:
+                            pass
+                        try:
+                            for oid in getattr(game, "_extra_owner_ids", set()) or set():
+                                owner_ids.add(int(oid))
+                        except Exception:
+                            pass
+                        for oid in owner_ids:
+                            try:
+                                await bot.send_message(int(oid), body, components=kb)
+                            except Exception:
+                                log.exception("notify owner %s donation", oid)
                     except Exception:
                         log.exception("notify owner donation")
                 except Exception as e:
@@ -3117,6 +3128,81 @@ def register_handlers(bot, app_ctx: dict):
                     _pending[pid] = {"kind": "donation_set_total"}
                     await out("مبلغ کل حمایت‌های نمایشی را به عدد بنویسید:", ik([cancel_row()]))
                     return
+                return
+
+            # Owner review of financial support requests
+            if data.startswith("ng:donrev:"):
+                if not owner:
+                    await out("❌ فقط مالک می‌تواند درخواست حمایت را بررسی کند.", force_new=True)
+                    return
+                parts = str(data).split(":")
+                if len(parts) < 4:
+                    await out("❌ داده بررسی حمایت نامعتبر است.", force_new=True)
+                    return
+                action = parts[2]
+                try:
+                    did = int(parts[3])
+                except Exception:
+                    await out("❌ شناسه درخواست نامعتبر است.", force_new=True)
+                    return
+                approve = action in ("ok", "yes", "1", "approve")
+                if action not in ("ok", "yes", "1", "approve", "no", "0", "reject"):
+                    await out("❌ عملیات نامعتبر.", force_new=True)
+                    return
+                try:
+                    from modules.ng.donations import DonationError as _DE
+                    drow = await game.donations.review(did, pid, approve=approve)
+                    amount_i = int(float(drow.get("amount") or 0))
+                    if approve:
+                        await out(
+                            f"✅ حمایت #{did} تأیید شد." + chr(10) + f"مبلغ: {amount_i:,} تومان",
+                            ik([[("💎 مدیریت حمایت", "ng:odonate")], [("🏠 خانه", "ng:home")]]),
+                            force_new=True,
+                        )
+                        try:
+                            target = int(drow.get("player_id") or 0)
+                            if target:
+                                await bot.send_message(
+                                    target,
+                                    f"✅ درخواست حمایت #{did} تأیید شد." + chr(10)
+                                    + f"مبلغ: {amount_i:,} تومان" + chr(10)
+                                    + "از حمایت شما سپاسگزاریم 🙏",
+                                )
+                        except Exception:
+                            log.exception("notify donor approved")
+                        try:
+                            text = game.donations.announcement_text(drow)
+                            await game.broadcast_log("donation", text)
+                        except Exception:
+                            log.exception("broadcast donation")
+                        try:
+                            text = game.donations.announcement_text(drow)
+                            gid = getattr(game, "group_id", None)
+                            if gid and hasattr(bot, "send_message"):
+                                await bot.send_message(gid, text)
+                        except Exception:
+                            log.exception("group donation announce")
+                    else:
+                        await out(
+                            f"❌ حمایت #{did} رد شد.",
+                            ik([[("💎 مدیریت حمایت", "ng:odonate")], [("🏠 خانه", "ng:home")]]),
+                            force_new=True,
+                        )
+                        try:
+                            target = int(drow.get("player_id") or 0)
+                            if target:
+                                await bot.send_message(
+                                    target,
+                                    f"❌ درخواست حمایت #{did} رد شد." + chr(10)
+                                    + "در صورت نیاز با مالک هماهنگ کنید.",
+                                )
+                        except Exception:
+                            log.exception("notify donor rejected")
+                except _DE as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("donrev")
+                    await out(f"❌ خطا در بررسی حمایت: {e}", force_new=True)
                 return
 
             if data == "ng:atkmenu" or data.startswith("ng:atk:") or data.startswith("ng:fight:") or data.startswith("ng:nuke"):
