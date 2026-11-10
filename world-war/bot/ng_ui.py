@@ -123,11 +123,32 @@ def main_kb(is_owner: bool = False, has_country: bool = False) -> MenuKeyboardMa
 
 
 def ik(rows: list) -> InlineKeyboardMarkup:
+    """Build inline keyboard. Each row must be list/tuple of (label, callback) pairs."""
     kb = InlineKeyboardMarkup()
-    for ri, row in enumerate(rows, 1):
-        for label, data in row:
-            if label:
-                kb.add(InlineKeyboardButton(str(label)[:64], callback_data=str(data)[:64]), row=ri)
+    for ri, row in enumerate(rows or [], 1):
+        if not row:
+            continue
+        # If a single (label, data) was passed instead of a row, wrap it
+        if (
+            isinstance(row, (list, tuple))
+            and len(row) == 2
+            and not isinstance(row[0], (list, tuple))
+            and not isinstance(row[1], (list, tuple))
+        ):
+            row = [row]
+        for item in row:
+            try:
+                if not item:
+                    continue
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    label, data = item[0], item[1]
+                else:
+                    continue
+                if label:
+                    kb.add(InlineKeyboardButton(str(label)[:64], callback_data=str(data)[:64]), row=ri)
+            except Exception:
+                log.exception("ik button skip bad item=%r", item)
+                continue
     return kb
 
 
@@ -4308,7 +4329,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("💵 دادن پول", f"ng:ougive:{tid}"), ("💸 گرفتن پول", f"ng:outake:{tid}")],
                     [("🧾 مالیات از کاربر", f"ng:outax:{tid}")],
                     [("🧬 جان ×۲ روشن", f"ng:oudblon:{tid}"), ("🧬 جان ×۲ خاموش", f"ng:oudbloff:{tid}")],
-                    cd_row[0],
+                    *cd_row,
                     [("⏱ رفع محدودیت ۳۰دقیقه", f"ng:dcd:{tid}")],
                     [("♻️ ریکاوری ۶ ساعته", f"ng:orec:{tid}")],
                     [("🪖 تنظیم تجهیزات", f"ng:oueq:{tid}")],
