@@ -3202,12 +3202,22 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 try:
                     msg = await game.attack(code, dst, kind, float(pct), pid)
-                    await out(msg, force_new=True)
+                    if not msg:
+                        msg = "✅ حمله انجام شد. جزئیات در گزارش گروه ارسال شد."
+                    await out(msg, ik([[("⚔️ منوی حمله", "ng:atkmenu")], [("🏠 خانه", "ng:home")]]), force_new=True)
                 except GameError as e:
                     await out(f"❌ {e}", force_new=True)
                 except Exception as e:
                     log.exception("fight")
-                    await out(f"❌ خطا در حمله: {e}", force_new=True)
+                    err = str(e)
+                    if "transaction is aborted" in err.lower() or "infailedsqltransaction" in err.lower():
+                        await out(
+                            "❌ خطای موقت دیتابیس در حمله. دوباره تلاش کنید.\n"
+                            "اگر حمله در گروه اعلام شده، احتمالاً اعمال شده است.",
+                            force_new=True,
+                        )
+                    else:
+                        await out(f"❌ خطا در حمله: {e}", force_new=True)
                 return
             if data.startswith("ng:nuke:") and not data.startswith("ng:nukego:"):
                 if not code:
@@ -3234,12 +3244,22 @@ def register_handlers(bot, app_ctx: dict):
                 dst = data.split(":")[-1]
                 try:
                     msg = await game.attack_nuclear(code, dst, pid)
+                    if not msg:
+                        msg = "✅ حمله اتمی انجام شد. جزئیات در گزارش گروه ارسال شد."
                     await out(msg, ik([[("⚔️ منوی حمله", "ng:atkmenu")], [("🏠 خانه", "ng:home")]]), force_new=True)
                 except GameError as e:
                     await out(f"❌ {e}", force_new=True)
                 except Exception as e:
                     log.exception("nukego")
-                    await out(f"❌ خطا در حمله اتمی: {e}", force_new=True)
+                    err = str(e)
+                    if "transaction is aborted" in err.lower() or "infailedsqltransaction" in err.lower():
+                        await out(
+                            "❌ خطای موقت دیتابیس در حمله اتمی. دوباره تلاش کنید.\n"
+                            "اگر حمله در گروه اعلام شده، احتمالاً اعمال شده است.",
+                            force_new=True,
+                        )
+                    else:
+                        await out(f"❌ خطا در حمله اتمی: {e}", force_new=True)
                 return
 
             # owner panel

@@ -1851,6 +1851,52 @@ class Game:
                 pass
         return True, ""
 
+
+    async def _sp_run(self, tx, name: str, fn) -> bool:
+        """Run fn under SAVEPOINT so a failed optional SQL does not abort the whole TX (PostgreSQL)."""
+        sp = "sp_" + "".join(ch if ch.isalnum() else "_" for ch in str(name))[:48]
+        try:
+            await tx.execute(f"SAVEPOINT {sp}")
+        except Exception:
+            try:
+                await fn()
+                return True
+            except Exception:
+                log.exception("sp_run(no-sp) %s", name)
+                return False
+        try:
+            await fn()
+            try:
+                await tx.execute(f"RELEASE SAVEPOINT {sp}")
+            except Exception:
+                pass
+            return True
+        except Exception:
+            log.exception("sp_run %s", name)
+            try:
+                await tx.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+            except Exception:
+                log.exception("rollback savepoint %s", name)
+                raise
+            return False
+
+    async def _tx_log_activity(self, tx, kind, summary, country=None, player_id=None):
+        async def _do():
+            nid = await tx.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_activity")
+            await tx.execute(
+                "INSERT INTO ng_activity (id, kind, country_code, player_id, summary, created_at, meta_json) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                (
+                    int(nid["id"]),
+                    kind,
+                    country,
+                    player_id,
+                    str(summary or "")[:500],
+                    datetime.now(timezone.utc).isoformat(),
+                    "{}",
+                ),
+            )
+        await self._sp_run(tx, "log_act", _do)
+
     async def attack(self, attacker: str, defender: str, kind: str, percent: float, pid: int) -> str:
         un_atk = self.is_un_force(attacker, pid)
         hack_atk = self.is_hacker_force(attacker, pid)
@@ -2088,7 +2134,7 @@ class Game:
 
             # Peak snapshot BEFORE treasury/inventory loot (for 6h full recovery)
             if new_hp <= 0 and d.get("owner_player_id"):
-                try:
+                async def _snap():
                     await self._capture_destroy_snapshot(
                         tx,
                         int(d["owner_player_id"]),
@@ -2097,8 +2143,7 @@ class Game:
                         max_hp_override=float(d.get("max_hp") or 1000),
                         clear_assets=False,
                     )
-                except Exception:
-                    log.exception("pre-loot destroy snapshot %s", defender)
+                await self._sp_run(tx, "preloot_snap", _snap)
 
             # economic toll on attacker
             toll = min(float(a["treasury"]) * 0.003, 150_000)
@@ -2266,33 +2311,28 @@ class Game:
                 f"قدرت حمله: {float(clog['ap']):.0f} | قدرت دفاع: {float(clog.get('dp') or 0):.0f}"
             )
         report = chr(10).join(report_lines)
-        await self.broadcast_log("attack", report)
+        try:
+            await self.broadcast_log("attack", report)
+        except Exception:
+            log.exception("broadcast attack report")
         if new_hp <= 0:
-            await self.alliances.on_country_destroyed(defender)
-            await self.broadcast_log("destroy", f"💥 کشور {def_name} نابود شد.")
+            try:
+                await self.alliances.on_country_destroyed(defender)
+            except Exception:
+                log.exception("alliance on destroy")
+            try:
+                await self.broadcast_log("destroy", f"💥 کشور {def_name} نابود شد.")
+            except Exception:
+                log.exception("broadcast destroy")
         try:
             wear = await self.apply_defense_wear(defender)
             if wear:
                 report = report + chr(10) + chr(10) + "⚠️ " + wear
         except Exception:
-            pass
+            log.exception("defense wear")
         return report
 
 
-    async def _tx_log_activity(self, tx, kind, summary, country=None, player_id=None):
-        nid = await tx.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_activity")
-        await tx.execute(
-            "INSERT INTO ng_activity (id, kind, country_code, player_id, summary, created_at, meta_json) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-            (
-                int(nid["id"]),
-                kind,
-                country,
-                player_id,
-                summary[:500],
-                datetime.now(timezone.utc).isoformat(),
-                "{}",
-            ),
-        )
 
     # ---------- statements ----------
     async def submit_statement(self, code: str, pid: int, body: str) -> str:
@@ -4758,6 +4798,10 @@ class Game:
         raise GameError("بمب اتم در انبار ندارید. از فروشگاه (هسته‌ای) بخرید یا در کارگاه بسازید.")
 
     async def attack_nuclear(self, attacker: str, defender: str, pid: int) -> str:
+        destroyed = False
+        damage = 0.0
+        new_hp = 0.0
+        pct = 0.0
         un_atk = self.is_un_force(attacker, pid)
         hack_atk = self.is_hacker_force(attacker, pid)
         free_atk = un_atk or hack_atk
@@ -4936,14 +4980,23 @@ class Game:
             f"سلامت فعلی: {int(new_hp)}/{int(float(d['max_hp']))}\n"
             f"بمب مصرف‌شده: ۱"
         )
-        await self.log_activity("attack", report.replace("\n", " | "), attacker, pid)
-        await self.broadcast_log("attack", report)
+        try:
+            await self.log_activity("attack", report.replace(chr(10), " | "), attacker, pid)
+        except Exception:
+            log.exception("log nuclear attack")
+        try:
+            await self.broadcast_log("attack", report)
+        except Exception:
+            log.exception("broadcast nuclear attack")
         if destroyed:
             try:
                 await self.alliances.on_country_destroyed(defender)
             except Exception:
                 log.exception("alliance on nuclear destroy")
-            await self.broadcast_log("destroy", f"💥 کشور {def_name} در اثر حمله اتمی نابود شد.")
+            try:
+                await self.broadcast_log("destroy", f"💥 کشور {def_name} در اثر حمله اتمی نابود شد.")
+            except Exception:
+                log.exception("broadcast nuclear destroy")
         return report
 
 
@@ -5609,107 +5662,88 @@ class Game:
 
 
     async def _apply_defeat_in_tx(self, tx, *, attacker: str, defender: str, now, half_money: float, a_treas: float) -> None:
-        """Free defender country after lethal damage. Never raise — log and continue."""
-        try:
-            d_row = await tx.fetchrow(
-                "SELECT treasury, owner_player_id, max_hp FROM ng_countries WHERE country_code=$1",
-                (defender,),
-            )
-            if not d_row:
-                return
-            prev = d_row.get("owner_player_id")
-            treas = float(d_row.get("treasury") or 0)
-            take = min(treas, max(0.0, float(half_money)))
-            left = max(0.0, treas - take)
-            # Fallback snapshot if peak was not captured earlier; clear residual assets
-            if prev:
-                try:
-                    await self._capture_destroy_snapshot(
-                        tx, int(prev), defender, clear_assets=True
-                    )
-                except Exception:
-                    log.exception("destroy snapshot %s", defender)
-                try:
-                    await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (defender,))
-                except Exception:
-                    pass
-                try:
-                    await tx.execute("DELETE FROM ng_buildings WHERE country_code=$1", (defender,))
-                except Exception:
-                    pass
-            await tx.execute(
-                """
-                UPDATE ng_countries
-                SET treasury=$1,
-                    owner_player_id=NULL,
-                    is_destroyed=0,
-                    claimed_at=NULL,
-                    hp=COALESCE(NULLIF(max_hp,0),1000),
-                    daily_income=0,
-                    daily_expense=0
-                WHERE country_code=$2
-                """,
-                (left, defender),
-            )
-            if take > 0:
+        """Free defender after lethal damage. Uses savepoints so optional SQL cannot abort the TX."""
+        d_row = await tx.fetchrow(
+            "SELECT treasury, owner_player_id, max_hp FROM ng_countries WHERE country_code=$1",
+            (defender,),
+        )
+        if not d_row:
+            return
+        prev = d_row.get("owner_player_id")
+        treas = float(d_row.get("treasury") or 0)
+        take = min(treas, max(0.0, float(half_money or 0)))
+        left = max(0.0, treas - take)
+
+        if prev:
+            async def _snap():
+                await self._capture_destroy_snapshot(
+                    tx, int(prev), defender, clear_assets=True
+                )
+            await self._sp_run(tx, "defeat_snap", _snap)
+
+        # Core free — must succeed
+        await tx.execute(
+            """
+            UPDATE ng_countries
+            SET treasury=$1,
+                owner_player_id=NULL,
+                is_destroyed=0,
+                claimed_at=NULL,
+                hp=COALESCE(NULLIF(max_hp,0),1000),
+                daily_income=0,
+                daily_expense=0
+            WHERE country_code=$2
+            """,
+            (left, defender),
+        )
+        if take > 0 and attacker:
+            async def _loot_money():
                 await tx.execute(
                     "UPDATE ng_countries SET treasury=treasury+$1 WHERE country_code=$2",
                     (take, attacker),
                 )
-            # clear residual inventory/buildings so next claim is clean
-            try:
-                await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (defender,))
-            except Exception:
-                pass
-            try:
-                await tx.execute("DELETE FROM ng_buildings WHERE country_code=$1", (defender,))
-            except Exception:
-                pass
-            if prev:
-                until = (now + timedelta(seconds=int(DESTROY_WAIT_SEC or 1800))).isoformat()
+            await self._sp_run(tx, "defeat_loot_money", _loot_money)
+
+        async def _clear_inv():
+            await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (defender,))
+        await self._sp_run(tx, "defeat_clear_inv", _clear_inv)
+
+        async def _clear_bld():
+            await tx.execute("DELETE FROM ng_buildings WHERE country_code=$1", (defender,))
+        await self._sp_run(tx, "defeat_clear_bld", _clear_bld)
+
+        if prev:
+            until = (now + timedelta(seconds=int(DESTROY_WAIT_SEC or 1800))).isoformat()
+            await tx.execute(
+                "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=$1 WHERE player_id=$2",
+                (until, int(prev)),
+            )
+
+            async def _clear_other():
                 await tx.execute(
-                    "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=$1 WHERE player_id=$2",
-                    (until, int(prev)),
+                    """
+                    UPDATE ng_countries
+                    SET owner_player_id=NULL, claimed_at=NULL
+                    WHERE owner_player_id=$1 AND country_code<>$2
+                    """,
+                    (int(prev), defender),
                 )
-                # also clear any other countries still pointing to this player
-                try:
-                    await tx.execute(
-                        """
-                        UPDATE ng_countries
-                        SET owner_player_id=NULL, claimed_at=NULL
-                        WHERE owner_player_id=$1 AND country_code<>$2
-                        """,
-                        (int(prev), defender),
-                    )
-                except Exception:
-                    pass
-                try:
-                    await tx.execute(
-                        "UPDATE ng_players SET cash=$1 WHERE player_id=$2",
-                        (left, int(prev)),
-                    )
-                except Exception:
-                    pass
-                try:
-                    await self._tx_log_activity(
-                        tx,
-                        "dm_notice",
-                        "💀 کشور شما نابود شد.\nپول پایدار حساب حفظ شد. محدودیت ۳۰ دقیقه‌ای فعال است.",
-                        defender,
-                        int(prev),
-                    )
-                except Exception:
-                    try:
-                        await self.log_activity(
-                            "dm_notice",
-                            "💀 کشور شما نابود شد. محدودیت ۳۰ دقیقه‌ای فعال است.",
-                            defender,
-                            int(prev),
-                        )
-                    except Exception:
-                        pass
-        except Exception:
-            log.exception("apply defeat %s -> %s", attacker, defender)
+            await self._sp_run(tx, "defeat_clear_other", _clear_other)
+
+            async def _cash():
+                await tx.execute(
+                    "UPDATE ng_players SET cash=$1 WHERE player_id=$2",
+                    (left, int(prev)),
+                )
+            await self._sp_run(tx, "defeat_cash", _cash)
+
+            await self._tx_log_activity(
+                tx,
+                "dm_notice",
+                "💀 کشور شما نابود شد.\nپول پایدار حساب حفظ شد. محدودیت ۳۰ دقیقه‌ای فعال است.".replace("\\n", chr(10)),
+                defender,
+                int(prev),
+            )
 
     async def _capture_destroy_snapshot(
         self,
