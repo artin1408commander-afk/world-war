@@ -22,6 +22,9 @@ from modules.ng.special_countries import PAHLAVI_CODE, PAHLAVI_NAME_FA, PAHLAVI_
 
 log = logging.getLogger(__name__)
 
+# owner assign-country page cache: owner_pid -> list of country codes
+_set_country_cache: dict[int, list[str]] = {}
+
 
 def parse_amount(text) -> float:
     """Parse user-typed money/qty; strip invisible/bidi marks (e.g. U+200E from RTL keyboards)."""
@@ -3693,87 +3696,130 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
 
-            if data.startswith("ng:ousetcty:") and not data.startswith("ng:ousetctygo:"):
+            # ---- Owner: manual set country (index-based callbacks; reliable on Bale) ----
+            if (
+                data.startswith("ng:ousetcty:")
+                or data.startswith("ng:sc:")
+                or data.startswith("ng:scgo:")
+                or data.startswith("ng:ousetctygo:")
+                or data.startswith("ng:ousetctytype:")
+                or data.startswith("ng:scpage:")
+            ):
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
                     return
-                try:
-                    tid = int(str(data).split(":")[2])
-                except Exception:
-                    await out("❌ شناسه نامعتبر", force_new=True)
-                    return
-                page = 0
-                parts = str(data).split(":")
-                if len(parts) >= 4 and str(parts[3]).isdigit():
-                    page = int(parts[3])
-                try:
-                    countries, total = await game.list_free_countries_for_assign(page=page, page_size=15)
-                    if not countries and total == 0:
-                        await out("کشور آزادی برای تخصیص نیست.", ik([[("👤 بازگشت", f"ng:ou:{tid}")]]), force_new=True)
+                # list / page: ng:ousetcty:TID  | ng:ousetcty:TID:PAGE | ng:sc:TID:PAGE
+                if data.startswith("ng:ousetctytype:"):
+                    try:
+                        tid = int(str(data).split(":")[-1])
+                    except Exception:
+                        await out("❌ شناسه نامعتبر", force_new=True)
                         return
-                    rows = []
-                    for c in countries:
-                        label = f"{c.get('flag') or ''} {c.get('name_fa') or c['country_code']}".strip()
-                        rows.append([(label[:40], f"ng:ousetctygo:{tid}:{c['country_code']}")])
-                    nav = []
-                    if page > 0:
-                        nav.append(("⬅️ قبلی", f"ng:ousetcty:{tid}:{page-1}"))
-                    if (page + 1) * 15 < total:
-                        nav.append(("بعدی ➡️", f"ng:ousetcty:{tid}:{page+1}"))
-                    if nav:
-                        rows.append(nav)
-                    rows.append([("✍️ ورود کد کشور", f"ng:ousetctytype:{tid}")])
-                    rows.append([("👤 بازگشت", f"ng:ou:{tid}")])
+                    _pending[pid] = {"kind": "owner_set_country", "target": tid}
                     await out(
-                        f"🗺 تنظیم کشور برای بازیکن {tid}" + chr(10)
-                        + f"کشور آزاد را انتخاب کنید (صفحه {page+1}):",
-                        ik(rows),
+                        f"کد کشور را بفرستید برای بازیکن {tid} (مثال: IR یا US):",
+                        ik([[("👤 انصراف", f"ng:ou:{tid}")]]),
                         force_new=True,
                     )
-                except Exception as e:
-                    log.exception("ousetcty")
-                    await out(f"❌ {e}", force_new=True)
-                return
-
-            if data.startswith("ng:ousetctytype:"):
-                if not owner:
-                    await out("❌ فقط مالک", force_new=True)
                     return
-                try:
-                    tid = int(str(data).split(":")[-1])
-                except Exception:
-                    await out("❌ شناسه نامعتبر", force_new=True)
+                if data.startswith("ng:scgo:") or data.startswith("ng:ousetctygo:"):
+                    parts = str(data).split(":")
+                    # ng:scgo:TID:IDX  or  ng:ousetctygo:TID:CODE
+                    try:
+                        tid = int(parts[2])
+                    except Exception:
+                        await out("❌ شناسه نامعتبر", force_new=True)
+                        return
+                    code = None
+                    if data.startswith("ng:scgo:"):
+                        try:
+                            idx = int(parts[3])
+                        except Exception:
+                            await out("❌ انتخاب نامعتبر", force_new=True)
+                            return
+                        codes = _set_country_cache.get(int(pid)) or []
+                        if idx < 0 or idx >= len(codes):
+                            await out(
+                                "❌ لیست منقضی شده. دوباره «تنظیم کشور» را باز کنید.",
+                                ik([[("🗺 تنظیم کشور", f"ng:ousetcty:{tid}")], [("👤 بازگشت", f"ng:ou:{tid}")]]),
+                                force_new=True,
+                            )
+                            return
+                        code = codes[idx]
+                    else:
+                        code = ":".join(parts[3:]).strip().upper() if len(parts) > 3 else ""
+                    if not code:
+                        await out("❌ کد کشور خالی است", force_new=True)
+                        return
+                    try:
+                        msg = await game.admin_assign_country(pid, tid, code)
+                        await out(
+                            msg,
+                            ik([[("👤 پروفایل", f"ng:ou:{tid}")], [("🏠 خانه", "ng:home")]]),
+                            force_new=True,
+                        )
+                    except GameError as e:
+                        await out(
+                            f"❌ {e}",
+                            ik([[("🗺 دوباره", f"ng:ousetcty:{tid}")], [("👤 بازگشت", f"ng:ou:{tid}")]]),
+                            force_new=True,
+                        )
+                    except Exception as e:
+                        log.exception("set country go")
+                        await out(f"❌ خطا در تنظیم کشور: {e}", force_new=True)
                     return
-                _pending[pid] = {"kind": "owner_set_country", "target": tid}
-                await out(
-                    f"کد کشور را بفرستید (مثال: IR یا US) برای بازیکن {tid}:",
-                    ik([[("👤 انصراف", f"ng:ou:{tid}")]]),
-                    force_new=True,
-                )
-                return
-
-            if data.startswith("ng:ousetctygo:"):
-                if not owner:
-                    await out("❌ فقط مالک", force_new=True)
-                    return
+                # list page
                 parts = str(data).split(":")
-                if len(parts) < 4:
-                    await out("❌ داده نامعتبر", force_new=True)
-                    return
                 try:
                     tid = int(parts[2])
                 except Exception:
                     await out("❌ شناسه نامعتبر", force_new=True)
                     return
-                code = parts[3].strip().upper()
+                page = 0
+                if len(parts) >= 4 and str(parts[3]).isdigit():
+                    page = int(parts[3])
                 try:
-                    msg = await game.admin_assign_country(pid, tid, code)
-                    await out(msg, ik([[("👤 پروفایل", f"ng:ou:{tid}")], [("🏠 خانه", "ng:home")]]), force_new=True)
-                except GameError as e:
-                    await out(f"❌ {e}", ik([[("🗺 دوباره", f"ng:ousetcty:{tid}")], [("👤 بازگشت", f"ng:ou:{tid}")]]), force_new=True)
+                    countries, total = await game.list_free_countries_for_assign(page=page, page_size=12)
+                    codes = [str(c["country_code"]).upper() for c in countries]
+                    # store full page codes under owner pid for index callbacks
+                    base = page * 12
+                    full_cache = _set_country_cache.get(int(pid)) or []
+                    # keep simple: replace cache with this page mapped by absolute index
+                    # rebuild cache as only current page codes; idx is page-local
+                    _set_country_cache[int(pid)] = codes
+                    if not countries:
+                        await out(
+                            "کشور آزادی برای تخصیص نیست.",
+                            ik([[("👤 بازگشت", f"ng:ou:{tid}")]]),
+                            force_new=True,
+                        )
+                        return
+                    rows = []
+                    for i, c in enumerate(countries):
+                        flag = c.get("flag") or ""
+                        name = c.get("name_fa") or c["country_code"]
+                        dest = "(نابودشده) " if int(c.get("is_destroyed") or 0) else ""
+                        label = f"{flag} {dest}{name}".strip()[:40]
+                        rows.append([(label, f"ng:scgo:{tid}:{i}")])
+                    nav = []
+                    if page > 0:
+                        nav.append(("⬅️ قبلی", f"ng:ousetcty:{tid}:{page-1}"))
+                    if (page + 1) * 12 < total:
+                        nav.append(("بعدی ➡️", f"ng:ousetcty:{tid}:{page+1}"))
+                    if nav:
+                        rows.append(nav)
+                    rows.append([("✍️ ورود کد", f"ng:ousetctytype:{tid}")])
+                    rows.append([("👤 بازگشت", f"ng:ou:{tid}")])
+                    await out(
+                        f"🗺 تنظیم کشور برای {tid}" + chr(10)
+                        + f"یک کشور را لمس کنید — صفحه {page+1}" + chr(10)
+                        + f"آزاد: {total}",
+                        ik(rows),
+                        force_new=True,
+                    )
                 except Exception as e:
-                    log.exception("ousetctygo")
-                    await out(f"❌ خطا: {e}", force_new=True)
+                    log.exception("ousetcty list")
+                    await out(f"❌ خطا در لیست کشورها: {e}", force_new=True)
                 return
 
             if data.startswith("ng:orec:") and not data.startswith("ng:orecgo:"):

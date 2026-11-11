@@ -6346,34 +6346,43 @@ class Game:
             raise GameError("بازیکن یافت نشد")
         c = await self.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (code,))
         if not c:
-            raise GameError("کشور یافت نشد")
+            # try case-insensitive match
+            c = await self.db.fetchrow(
+                "SELECT * FROM ng_countries WHERE UPPER(country_code)=$1", (code,)
+            )
+            if c:
+                code = str(c["country_code"])
+            else:
+                raise GameError(f"کشور «{code}» یافت نشد")
         owner = c.get("owner_player_id")
-        if owner and int(owner) != target_id:
-            raise GameError("این کشور الان بازیکن دیگری دارد")
-        # free player's current country if different
+        if owner is not None and str(owner).strip() != "" and int(owner) != target_id:
+            raise GameError(f"این کشور الان بازیکن دیگری دارد (id={owner})")
         live = await self.resolve_country_for_player(target_id)
         now = datetime.now(timezone.utc).isoformat()
+        max_hp = float(c.get("max_hp") or 1000) or 1000.0
+        hp = float(c.get("hp") or 0)
+        if hp <= 0 or int(c.get("is_destroyed") or 0) == 1:
+            hp = max_hp
         async with self.db.transaction() as tx:
-            if live and str(live).upper() != code:
-                await tx.execute(
-                    """
-                    UPDATE ng_countries
-                    SET owner_player_id=NULL, is_destroyed=0
-                    WHERE country_code=$1 AND owner_player_id=$2
-                    """,
-                    (str(live).upper(), target_id),
-                )
-            max_hp = float(c.get("max_hp") or 1000) or 1000.0
-            hp = float(c.get("hp") or max_hp)
-            if hp <= 0:
-                hp = max_hp
+            if live and str(live).upper() != code.upper():
+                try:
+                    await tx.execute(
+                        """
+                        UPDATE ng_countries
+                        SET owner_player_id=NULL
+                        WHERE UPPER(country_code)=$1 AND owner_player_id=$2
+                        """,
+                        (str(live).upper(), target_id),
+                    )
+                except Exception:
+                    log.exception("free previous country")
             await tx.execute(
                 """
                 UPDATE ng_countries
                 SET owner_player_id=$1, is_destroyed=0, hp=$2, max_hp=$3, claimed_at=$4
-                WHERE country_code=$5
+                WHERE UPPER(country_code)=$5
                 """,
-                (target_id, hp, max_hp, now, code),
+                (target_id, hp, max_hp, now, code.upper()),
             )
             await tx.execute(
                 """
@@ -6383,24 +6392,38 @@ class Game:
                 """,
                 (code, target_id),
             )
+            try:
+                await self.set_player_cash(target_id, float(c.get("treasury") or 0))
+            except Exception:
+                pass
         label = await self.country_label(code)
         await self.admin_log(actor, "assign_country", f"{target_id}->{code}")
-        return f"✅ کشور «{label}» برای بازیکن {target_id} تنظیم شد.\nHP: {int(hp)}/{int(max_hp)}"
+        return (
+            f"✅ کشور تنظیم شد." + chr(10)
+            + f"بازیکن: {target_id}" + chr(10)
+            + f"کشور: {label}" + chr(10)
+            + f"کد: {code}" + chr(10)
+            + f"HP: {int(hp)}/{int(max_hp)}"
+        )
 
     async def list_free_countries_for_assign(self, page: int = 0, page_size: int = 20):
+        """Countries with no owner (including previously destroyed free ones)."""
         page = max(0, int(page))
         page_size = max(5, min(30, int(page_size)))
         rows = await self.db.fetch(
             """
-            SELECT country_code, name_fa, flag, entity_type
+            SELECT country_code, name_fa, flag, entity_type, is_destroyed, hp, max_hp
             FROM ng_countries
             WHERE owner_player_id IS NULL
-              AND COALESCE(is_destroyed,0)=0
             ORDER BY name_fa
             """
         )
-        # filter UN codes
-        free = [r for r in (rows or []) if not self.is_un_country(r["country_code"])]
+        free = []
+        for r in (rows or []):
+            code = str(r.get("country_code") or "").upper()
+            if not code or self.is_un_country(code):
+                continue
+            free.append(r)
         total = len(free)
         start = page * page_size
         chunk = free[start : start + page_size]
