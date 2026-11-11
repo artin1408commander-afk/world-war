@@ -232,6 +232,15 @@ async def async_main() -> None:
             settings.owner_id,
             settings.database_mode,
         )
+        # Free countries of players inactive 3+ days on every startup
+        try:
+            purged = await game.purge_inactive_players(days=3)
+            if purged:
+                log.info("startup inactive purge: %s players", len(purged))
+            else:
+                log.info("startup inactive purge: none")
+        except Exception:
+            log.exception("startup inactive purge")
 
         asyncio.create_task(daily_loop(game))
 

@@ -559,6 +559,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("💎 حمایت مالی", "ng:odonate")],
                     [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
                     [("🏷 قیمت فروشگاه", "ng:oprices"), ("🏷 تخفیف فروشگاه", "ng:odiscount")],
+                    [("☠️ هاردکور روشن/خاموش", "ng:ohardcore")],
                     [("🔴 ریست کامل جهان", "ng:oreset1")],
                 ]
                 await reply(message, "🛡 پنل مالک / سازمان ملل\nدستورات: /admin /owner /panel", ik(rows))
@@ -3523,6 +3524,19 @@ def register_handlers(bot, app_ctx: dict):
                 except GameError as e:
                     await out(f"❌ {e}")
                 return
+            if data == "ng:ohardcore":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    cur = await game.is_hardcore_mode()
+                    msg = await game.set_hardcore_mode(pid, not cur)
+                    await out(msg, force_new=True)
+                except Exception as e:
+                    log.exception("ohardcore")
+                    await out(f"❌ {e}", force_new=True)
+                return
+
             if data == "ng:orefstats":
                 await out(await game.referral_stats_text())
                 return
@@ -4391,8 +4405,14 @@ def register_handlers(bot, app_ctx: dict):
                 rows = []
                 if game.is_primary_owner(pid):
                     rows.append([("➕ افزودن مالک جدید", "ng:owners"), ("🛡 لیست مالکان", "ng:owners")])
+                try:
+                    hc = await game.is_hardcore_mode()
+                    hc_label = "☠️ هاردکور: روشن — خاموش کن" if hc else "☠️ هاردکور: خاموش — روشن کن"
+                except Exception:
+                    hc_label = "☠️ هاردکور روشن/خاموش"
                 rows += [
                     [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
+                    [(hc_label, "ng:ohardcore")],
                     [("💵 پول همگانی", "ng:ogiveall"), ("💰 پرداخت درآمد روزانه", "ng:odaily")],
                     [("❤️ دیدن HP ها", "ng:ohp"), ("🏅 رنکینگ", "ng:orank")],
                     [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],

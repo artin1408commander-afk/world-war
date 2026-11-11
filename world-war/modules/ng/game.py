@@ -414,6 +414,10 @@ class Game:
 
     # ---------- players ----------
     async def touch_player(self, pid: int, username=None, display=None) -> dict:
+        try:
+            await self.touch_activity(pid)
+        except Exception:
+            pass
         now = datetime.now(timezone.utc).isoformat()
         row = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (pid,))
         if row:
@@ -752,18 +756,26 @@ class Game:
                 pass
         capital = self.starting_capital(code)
         now = datetime.now(timezone.utc).isoformat()
-        # persistent player cash survives world reset / re-claim
+        # persistent player cash survives world reset / re-claim / destroy
         try:
-            cash = await self.get_player_cash(int(pid))
+            cash = float(await self.get_player_cash(int(pid)) or 0)
         except Exception:
             cash = 0.0
-        start_money = float(cash) if cash and float(cash) > 0 else float(capital)
-        if not cash or float(cash) <= 0:
+        # Always prefer saved cash (even if lower than capital); only seed capital when cash is zero
+        if cash > 0:
+            start_money = float(cash)
+        else:
+            start_money = float(capital)
             try:
                 await self.set_player_cash(int(pid), float(capital))
             except Exception:
-                pass
-            start_money = float(capital)
+                log.exception("seed player cash on claim")
+        # hardcore lock blocks re-entry unless owner recovers / assigns
+        if await self.is_hardcore_mode():
+            if await self.has_hardcore_lock(int(pid)):
+                raise GameError(
+                    "حالت هاردکور فعال است. پس از نابودی فقط مالک می‌تواند شما را ریکاوری کند."
+                )
         async with self.db.transaction() as tx:
             c = await tx.fetchrow(
                 "SELECT * FROM ng_countries WHERE country_code=$1", (code,)
@@ -1471,6 +1483,7 @@ class Game:
             "ALTER TABLE ng_player_flags ADD COLUMN last_alliance_exit_at TEXT",
             "ALTER TABLE ng_player_flags ADD COLUMN last_exit_alliance_id INTEGER",
             "ALTER TABLE ng_player_flags ADD COLUMN fast_attack_cd INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE ng_player_flags ADD COLUMN hardcore_lock INTEGER NOT NULL DEFAULT 0",
         ):
             try:
                 await self.db.execute(stmt)
@@ -1519,6 +1532,234 @@ class Game:
                 + "حملات عادی و اتمی این بازیکن بعد از هر حمله فقط ۳۰ ثانیه صبر نیاز دارند."
             )
         return f"✅ کول‌داون سریع ۳۰ ثانیه‌ای برای بازیکن {tid} خاموش شد (کول‌داون عادی جهان)."
+
+    # ---------- inactivity purge (3 days) + hardcore ----------
+    INACTIVE_DAYS = 3
+
+    async def ensure_activity_table(self) -> None:
+        try:
+            await self.db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ng_player_activity (
+                    player_id INTEGER PRIMARY KEY,
+                    last_start_at TEXT,
+                    last_active_at TEXT,
+                    start_count INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        except Exception:
+            log.exception("ensure_activity_table")
+        for stmt in (
+            "ALTER TABLE ng_player_activity ADD COLUMN last_active_at TEXT",
+            "ALTER TABLE ng_player_activity ADD COLUMN last_start_at TEXT",
+            "ALTER TABLE ng_player_activity ADD COLUMN start_count INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                await self.db.execute(stmt)
+            except Exception:
+                pass
+
+    async def touch_activity(self, pid: int) -> None:
+        """Mark player as active now (any meaningful interaction)."""
+        try:
+            await self.ensure_activity_table()
+            pid = int(pid)
+            now = datetime.now(timezone.utc).isoformat()
+            row = await self.db.fetchrow(
+                "SELECT player_id FROM ng_player_activity WHERE player_id=$1", (pid,)
+            )
+            if row:
+                await self.db.execute(
+                    "UPDATE ng_player_activity SET last_active_at=$1 WHERE player_id=$2",
+                    (now, pid),
+                )
+            else:
+                await self.db.execute(
+                    "INSERT INTO ng_player_activity (player_id, last_active_at, last_start_at, start_count) VALUES ($1,$2,$3,0)",
+                    (pid, now, now),
+                )
+        except Exception:
+            log.exception("touch_activity")
+
+    async def is_hardcore_mode(self) -> bool:
+        try:
+            row = await self.db.fetchrow(
+                "SELECT value FROM ng_bot_settings WHERE key=$1", ("hardcore_mode",)
+            )
+            return str((row or {}).get("value") or "0").strip() in ("1", "true", "on", "yes")
+        except Exception:
+            return False
+
+    async def set_hardcore_mode(self, actor: int, enabled: bool) -> str:
+        if not self.is_owner(int(actor)):
+            raise GameError("فقط مالک")
+        await self._write_setting_raw("hardcore_mode", "1" if enabled else "0")
+        await self.admin_log(int(actor), "hardcore_mode", "on" if enabled else "off")
+        if enabled:
+            return (
+                "☠️ حالت هاردکور روشن شد.\n"
+                "هر بازیکنی که نابود شود دیگر نمی‌تواند کشور بگیرد مگر با ریکاوری/تنظیم کشور توسط مالک."
+            )
+        return "✅ حالت هاردکور خاموش شد. بازیکنان پس از نابودی طبق قوانین عادی می‌توانند برگردند."
+
+    async def has_hardcore_lock(self, pid: int) -> bool:
+        try:
+            await self.ensure_player_flags_table()
+            row = await self.db.fetchrow(
+                "SELECT hardcore_lock FROM ng_player_flags WHERE player_id=$1",
+                (int(pid),),
+            )
+            return int((row or {}).get("hardcore_lock") or 0) == 1
+        except Exception:
+            return False
+
+    async def set_hardcore_lock(self, pid: int, locked: bool) -> None:
+        await self.ensure_player_flags_table()
+        pid = int(pid)
+        flag = 1 if locked else 0
+        exists = await self.db.fetchrow(
+            "SELECT player_id FROM ng_player_flags WHERE player_id=$1", (pid,)
+        )
+        if exists:
+            try:
+                await self.db.execute(
+                    "UPDATE ng_player_flags SET hardcore_lock=$1 WHERE player_id=$2",
+                    (flag, pid),
+                )
+            except Exception:
+                try:
+                    await self.db.execute(
+                        "ALTER TABLE ng_player_flags ADD COLUMN hardcore_lock INTEGER NOT NULL DEFAULT 0"
+                    )
+                    await self.db.execute(
+                        "UPDATE ng_player_flags SET hardcore_lock=$1 WHERE player_id=$2",
+                        (flag, pid),
+                    )
+                except Exception:
+                    log.exception("set hardcore_lock update")
+        else:
+            try:
+                await self.db.execute(
+                    "INSERT INTO ng_player_flags (player_id, hardcore_lock) VALUES ($1,$2)",
+                    (pid, flag),
+                )
+            except Exception:
+                try:
+                    await self.db.execute(
+                        "ALTER TABLE ng_player_flags ADD COLUMN hardcore_lock INTEGER NOT NULL DEFAULT 0"
+                    )
+                    await self.db.execute(
+                        "INSERT INTO ng_player_flags (player_id, hardcore_lock) VALUES ($1,$2)",
+                        (pid, flag),
+                    )
+                except Exception:
+                    log.exception("set hardcore_lock insert")
+
+    async def clear_hardcore_lock(self, pid: int) -> None:
+        await self.set_hardcore_lock(pid, False)
+
+    async def purge_inactive_players(self, days: int | None = None) -> list[dict]:
+        """Free countries of players inactive for N days. Returns list of purged rows."""
+        days = int(days if days is not None else self.INACTIVE_DAYS)
+        await self.ensure_activity_table()
+        cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)
+        cutoff_iso = cutoff.isoformat()
+        owned = await self.db.fetch(
+            """
+            SELECT c.country_code, c.owner_player_id, c.name_fa, c.flag,
+                   p.username, p.display_name
+            FROM ng_countries c
+            LEFT JOIN ng_players p ON p.player_id = c.owner_player_id
+            WHERE c.owner_player_id IS NOT NULL
+            """
+        )
+        purged = []
+        for row in owned or []:
+            try:
+                pid = int(row["owner_player_id"])
+            except Exception:
+                continue
+            if self.is_owner(pid):
+                continue
+            code = str(row["country_code"] or "").upper()
+            if self.is_un_country(code):
+                continue
+            # last activity
+            act = await self.db.fetchrow(
+                "SELECT last_active_at, last_start_at FROM ng_player_activity WHERE player_id=$1",
+                (pid,),
+            )
+            last_s = None
+            if act:
+                last_s = act.get("last_active_at") or act.get("last_start_at")
+            if not last_s:
+                # fall back to claimed_at
+                c2 = await self.db.fetchrow(
+                    "SELECT claimed_at FROM ng_countries WHERE country_code=$1", (code,)
+                )
+                last_s = (c2 or {}).get("claimed_at")
+            if not last_s:
+                # no activity data → treat as inactive (stale occupation)
+                last_dt = cutoff - __import__("datetime").timedelta(days=1)
+            else:
+                try:
+                    last_dt = datetime.fromisoformat(str(last_s).replace("Z", "+00:00"))
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    last_dt = cutoff - __import__("datetime").timedelta(days=1)
+            if last_dt >= cutoff:
+                continue
+            # free country + soft reset player country binding (keep cash & referrals)
+            try:
+                # sync cash from treasury before free
+                try:
+                    c3 = await self.db.fetchrow(
+                        "SELECT treasury FROM ng_countries WHERE country_code=$1", (code,)
+                    )
+                    treas = float((c3 or {}).get("treasury") or 0)
+                    cur_cash = await self.get_player_cash(pid)
+                    await self.set_player_cash(pid, max(cur_cash, treas))
+                except Exception:
+                    log.exception("inactive cash sync")
+                async with self.db.transaction() as tx:
+                    await tx.execute(
+                        """
+                        UPDATE ng_countries
+                        SET owner_player_id=NULL, is_destroyed=0, claimed_at=NULL
+                        WHERE country_code=$1 AND owner_player_id=$2
+                        """,
+                        (code, pid),
+                    )
+                    await tx.execute(
+                        "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=NULL WHERE player_id=$1",
+                        (pid,),
+                    )
+                    # clear inventory of freed country
+                    try:
+                        await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (code,))
+                    except Exception:
+                        pass
+                name = row.get("display_name") or row.get("username") or str(pid)
+                cname = row.get("name_fa") or code
+                flag = row.get("flag") or ""
+                msg = (
+                    f"🧹 بازیکن {name} حذف شد از مالکیت کشور.\n"
+                    f"دلیل: بازی نکردن به مدت {days} روز\n"
+                    f"چرا؟ چون داشت کشور {flag} {cname} را اشغال می‌کرد.\n"
+                    f"کشور آزاد شد."
+                )
+                try:
+                    await self.log_activity("admin", msg, code, pid)
+                except Exception:
+                    log.exception("inactive group log")
+                purged.append({"player_id": pid, "country": code, "name": name})
+                log.info("purged inactive player %s country %s", pid, code)
+            except Exception:
+                log.exception("purge inactive %s", pid)
+        return purged
+
 
     async def effective_attack_cooldown_sec(self, code: str | None = None, player_id: int | None = None) -> int:
         """Global cooldown, or 30s if owner enabled fast CD for that player."""
@@ -2517,6 +2758,10 @@ class Game:
 
 
     async def get_player_cash(self, pid: int) -> float:
+        try:
+            await self.db.execute("ALTER TABLE ng_players ADD COLUMN cash REAL NOT NULL DEFAULT 0")
+        except Exception:
+            pass
         p = await self.db.fetchrow("SELECT cash FROM ng_players WHERE player_id=$1", (int(pid),))
         if not p:
             return 0.0
@@ -2527,10 +2772,22 @@ class Game:
 
     async def set_player_cash(self, pid: int, amount: float) -> None:
         amount = max(0.0, float(amount))
-        await self.db.execute(
-            "UPDATE ng_players SET cash=$1 WHERE player_id=$2",
-            (amount, int(pid)),
-        )
+        try:
+            await self.db.execute("ALTER TABLE ng_players ADD COLUMN cash REAL NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        # ensure player row exists
+        exists = await self.db.fetchrow("SELECT player_id FROM ng_players WHERE player_id=$1", (int(pid),))
+        if not exists:
+            await self.db.execute(
+                "INSERT INTO ng_players (player_id, cash) VALUES ($1,$2)",
+                (int(pid), amount),
+            )
+        else:
+            await self.db.execute(
+                "UPDATE ng_players SET cash=$1 WHERE player_id=$2",
+                (amount, int(pid)),
+            )
 
     async def sync_cash_from_country(self, code: str) -> None:
         """Mirror country treasury into owner persistent cash."""
@@ -3051,6 +3308,22 @@ class Game:
             raise GameError("مجاز نیستید")
         if confirm_phrase.strip() != "ریست کامل جهان":
             raise GameError("عبارت تأیید نادرست است.")
+        # Sync country treasuries into persistent cash before wipe
+        try:
+            owned = await self.db.fetch(
+                "SELECT owner_player_id, treasury FROM ng_countries WHERE owner_player_id IS NOT NULL"
+            )
+            for row in owned or []:
+                try:
+                    pid = int(row["owner_player_id"])
+                    treas = float(row.get("treasury") or 0)
+                    cur = await self.get_player_cash(pid)
+                    # keep the higher of stored cash and live treasury so money is never lost
+                    await self.set_player_cash(pid, max(cur, treas))
+                except Exception:
+                    log.exception("pre-reset cash sync")
+        except Exception:
+            log.exception("pre-reset cash bulk")
         # Preserve player cash + referral graph across world reset
         saved_players = await self.db.fetch(
             "SELECT player_id, username, display_name, cash, is_banned, ban_reason FROM ng_players"
@@ -5163,19 +5436,28 @@ class Game:
     PAGE_SIZE = 8
 
     async def record_start(self, pid: int) -> None:
+        await self.ensure_activity_table()
         now = datetime.now(timezone.utc).isoformat()
+        pid = int(pid)
         row = await self.db.fetchrow(
             "SELECT player_id FROM ng_player_activity WHERE player_id=$1", (pid,)
         )
         if row:
             await self.db.execute(
-                "UPDATE ng_player_activity SET last_start_at=$1, start_count=start_count+1 WHERE player_id=$2",
+                """
+                UPDATE ng_player_activity
+                SET last_start_at=$1, last_active_at=$1, start_count=start_count+1
+                WHERE player_id=$2
+                """,
                 (now, pid),
             )
         else:
             await self.db.execute(
-                "INSERT INTO ng_player_activity (player_id, last_start_at, start_count) VALUES ($1,$2,1)",
-                (pid, now),
+                """
+                INSERT INTO ng_player_activity (player_id, last_start_at, last_active_at, start_count)
+                VALUES ($1,$2,$3,1)
+                """,
+                (pid, now, now),
             )
 
     async def player_stats(self) -> dict:
@@ -5919,7 +6201,16 @@ class Game:
         await self._sp_run(tx, "defeat_clear_bld", _clear_bld)
 
         if prev:
-            until = (now + timedelta(seconds=int(DESTROY_WAIT_SEC or 1800))).isoformat()
+            hardcore = False
+            try:
+                hardcore = await self.is_hardcore_mode()
+            except Exception:
+                hardcore = False
+            if hardcore:
+                # effectively permanent until owner recovery
+                until = (now + timedelta(days=3650)).isoformat()
+            else:
+                until = (now + timedelta(seconds=int(DESTROY_WAIT_SEC or 1800))).isoformat()
             await tx.execute(
                 "UPDATE ng_players SET country_code=NULL, destroy_cooldown_until=$1 WHERE player_id=$2",
                 (until, int(prev)),
@@ -5937,16 +6228,55 @@ class Game:
             await self._sp_run(tx, "defeat_clear_other", _clear_other)
 
             async def _cash():
+                # never wipe higher saved cash; store remaining country money if larger
+                rowc = await tx.fetchrow(
+                    "SELECT cash FROM ng_players WHERE player_id=$1", (int(prev),)
+                )
+                prev_cash = float((rowc or {}).get("cash") or 0)
+                new_cash = max(prev_cash, float(left or 0))
                 await tx.execute(
                     "UPDATE ng_players SET cash=$1 WHERE player_id=$2",
-                    (left, int(prev)),
+                    (new_cash, int(prev)),
                 )
             await self._sp_run(tx, "defeat_cash", _cash)
 
+            if hardcore:
+                async def _hc():
+                    # best-effort inside tx
+                    try:
+                        await tx.execute(
+                            "ALTER TABLE ng_player_flags ADD COLUMN hardcore_lock INTEGER NOT NULL DEFAULT 0"
+                        )
+                    except Exception:
+                        pass
+                    exists = await tx.fetchrow(
+                        "SELECT player_id FROM ng_player_flags WHERE player_id=$1", (int(prev),)
+                    )
+                    if exists:
+                        await tx.execute(
+                            "UPDATE ng_player_flags SET hardcore_lock=1 WHERE player_id=$1",
+                            (int(prev),),
+                        )
+                    else:
+                        await tx.execute(
+                            "INSERT INTO ng_player_flags (player_id, hardcore_lock) VALUES ($1,1)",
+                            (int(prev),),
+                        )
+                await self._sp_run(tx, "defeat_hardcore", _hc)
+
+            dm = (
+                "💀 کشور شما نابود شد."
+                + chr(10)
+                + "پول پایدار حساب حفظ شد."
+            )
+            if hardcore:
+                dm += chr(10) + "☠️ حالت هاردکور فعال است — بازگشت فقط با ریکاوری مالک."
+            else:
+                dm += chr(10) + "محدودیت ۳۰ دقیقه‌ای فعال است."
             await self._tx_log_activity(
                 tx,
                 "dm_notice",
-                "💀 کشور شما نابود شد.\nپول پایدار حساب حفظ شد. محدودیت ۳۰ دقیقه‌ای فعال است.".replace("\\n", chr(10)),
+                dm,
                 defender,
                 int(prev),
             )
@@ -6317,6 +6647,10 @@ class Game:
             except Exception:
                 log.exception("mark snapshot recovered")
 
+        try:
+            await self.clear_hardcore_lock(target_id)
+        except Exception:
+            log.exception("clear hardcore on recover")
         label = await self.country_label(code)
         await self.admin_log(
             actor, "destroy_recover",
@@ -6396,6 +6730,10 @@ class Game:
                 await self.set_player_cash(target_id, float(c.get("treasury") or 0))
             except Exception:
                 pass
+        try:
+            await self.clear_hardcore_lock(target_id)
+        except Exception:
+            log.exception("clear hardcore on assign")
         label = await self.country_label(code)
         await self.admin_log(actor, "assign_country", f"{target_id}->{code}")
         return (
@@ -6763,15 +7101,14 @@ class Game:
         return "\n".join(lines)
 
     async def apply_referral_code(self, pid: int, code: str) -> str:
-        """Bind invitee to referrer and pay both sides (atomic).
-
-        Accepts codes like WW123 / ww123 / 123 (player id form).
-        Requires both sides to already own a country.
-        """
-        raw = (code or "").strip()
-        # normalize Persian/Arabic digits and whitespace
-        raw = raw.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
-        raw = raw.replace(" ", "").replace("‌", "")
+        """Bind invitee to referrer and pay both sides (atomic). Pays cash + country treasury."""
+        pid = int(pid)
+        raw = str(code or "").strip()
+        # normalize: strip spaces, @, zero-width, persian digits
+        trans = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+        raw = raw.translate(trans)
+        for ch in ("\u200c", "\u200f", "\u200e", " ", "\t", "@"):
+            raw = raw.replace(ch, "")
         code_u = raw.upper()
         if not code_u:
             raise GameError("کد خالی است")
@@ -6779,44 +7116,37 @@ class Game:
         me = await self.ensure_referral_row(pid)
         if me.get("referrer_id"):
             raise GameError("شما قبلاً دعوت‌کننده ثبت کرده‌اید.")
-        my_own = str(me.get("referral_code") or "").upper()
-        if my_own and (code_u == my_own or code_u == my_own.removeprefix("WW") or f"WW{code_u}" == my_own):
+        my_own = str(me.get("referral_code") or "").upper().replace(" ", "")
+        candidates_self = {my_own, my_own.removeprefix("WW"), f"WW{my_own.removeprefix('WW')}"}
+        if code_u in candidates_self or code_u.removeprefix("WW") in candidates_self:
             raise GameError("نمی‌توانید کد خودتان را وارد کنید.")
 
         owner_row = None
-        # direct match
-        owner_row = await self.db.fetchrow(
-            "SELECT * FROM ng_referrals WHERE UPPER(TRIM(referral_code))=$1",
-            (code_u,),
-        )
-        if not owner_row and code_u.startswith("WW"):
+        for cand in (code_u, code_u.removeprefix("WW"), f"WW{code_u.removeprefix('WW')}"):
+            owner_row = await self.db.fetchrow(
+                "SELECT * FROM ng_referrals WHERE UPPER(REPLACE(TRIM(referral_code),' ',''))=$1",
+                (cand,),
+            )
+            if owner_row:
+                break
             owner_row = await self.db.fetchrow(
                 "SELECT * FROM ng_referrals WHERE UPPER(TRIM(referral_code))=$1",
-                (code_u[2:],),
+                (cand,),
             )
-        if not owner_row and not code_u.startswith("WW"):
+            if owner_row:
+                break
+        if not owner_row and code_u.removeprefix("WW").isdigit():
+            cand_pid = int(code_u.removeprefix("WW"))
+            await self.ensure_referral_row(cand_pid)
             owner_row = await self.db.fetchrow(
-                "SELECT * FROM ng_referrals WHERE UPPER(TRIM(referral_code))=$1",
-                (f"WW{code_u}",),
+                "SELECT * FROM ng_referrals WHERE player_id=$1", (cand_pid,)
             )
-        if not owner_row and code_u.isdigit():
-            # fallback: code is numeric player id
-            try:
-                cand_pid = int(code_u)
-            except Exception:
-                cand_pid = None
-            if cand_pid is not None:
-                await self.ensure_referral_row(cand_pid)
-                owner_row = await self.db.fetchrow(
-                    "SELECT * FROM ng_referrals WHERE player_id=$1",
-                    (cand_pid,),
-                )
 
         if not owner_row:
             raise GameError("کد دعوت نامعتبر است. کد را دقیق وارد کنید (مثال: WW123456).")
 
         rid = int(owner_row["player_id"])
-        if rid == int(pid):
+        if rid == pid:
             raise GameError("نمی‌توانید کد خودتان را وارد کنید.")
         rp = await self.db.fetchrow("SELECT player_id FROM ng_players WHERE player_id=$1", (rid,))
         if not rp:
@@ -6829,14 +7159,18 @@ class Game:
         if not ref_code_c:
             raise GameError("دعوت‌کننده هنوز کشور ندارد؛ بعداً تلاش کنید.")
 
-        invitee_pay = float(self.REF_INVITEE_REWARD)
-        referrer_pay = float(self.REF_REFERRER_REWARD)
+        invitee_pay = float(getattr(self, "REF_INVITEE_REWARD", 30_000_000) or 30_000_000)
+        referrer_pay = float(getattr(self, "REF_REFERRER_REWARD", 30_000_000) or 30_000_000)
+        if invitee_pay <= 0:
+            invitee_pay = 30_000_000.0
+        if referrer_pay <= 0:
+            referrer_pay = 30_000_000.0
         now = datetime.now(timezone.utc).isoformat()
 
         async with self.db.transaction() as tx:
             cur = await tx.fetchrow("SELECT * FROM ng_referrals WHERE player_id=$1", (pid,))
             if cur and cur.get("referrer_id"):
-                raise GameError("قبلاً ثبت شده")
+                raise GameError("شما قبلاً دعوت‌کننده ثبت کرده‌اید.")
             await tx.execute(
                 "UPDATE ng_referrals SET referrer_id=$1, bound_at=$2, invitee_reward=$3, referrer_reward=$4 WHERE player_id=$5",
                 (rid, now, invitee_pay, referrer_pay, pid),
@@ -6856,8 +7190,11 @@ class Game:
                 (ref_treasury, ref_code_c),
             )
 
-        # mirror persistent player cash
+        # persistent cash (survives season reset)
         try:
+            await self.set_player_cash(pid, await self.get_player_cash(pid) + invitee_pay)
+            await self.set_player_cash(rid, await self.get_player_cash(rid) + referrer_pay)
+            # treasury already includes reward; sync cash from country so they stay aligned
             await self.sync_cash_from_country(my_code)
             await self.sync_cash_from_country(ref_code_c)
         except Exception:
