@@ -379,6 +379,11 @@ class LegendaryService:
 
     async def buy(self, pid: int, item_code: str) -> str:
         pid = int(pid)
+        try:
+            await self.g.assert_can_shop(pid)
+        except Exception as e:
+            # GameError or similar
+            raise LegendaryError(str(e)) from e
         item_code = str(item_code or "").strip()
         d = await self.get_def(item_code)
         if not d or not int(d.get("active") or 0):

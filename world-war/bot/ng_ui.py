@@ -541,6 +541,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("🌐 مدیریت اتحادها", "ng:oally"), ("📊 آمار دعوت", "ng:orefstats")],
                     [("💵 پول همگانی", "ng:ogiveall"), ("💰 پرداخت درآمد روزانه", "ng:odaily")],
                     [("جنگ باز", "ng:owar:1"), ("جنگ بسته", "ng:owar:0")],
+                    [("🔒 قطع خرید فروشگاه", "ng:oshop")],
                     [("هسته‌ای فعال", "ng:onuke:1"), ("هسته‌ای خاموش", "ng:onuke:0")],
                     [("⏱ کول‌داون ۲د", "ng:ocd:120"), ("⏱ کول‌داون ۵د", "ng:ocd:300")],
                     [("بیانیه‌ها", "ng:ostmt"), ("درخواست‌های NPT", "ng:onpt")],
@@ -3903,6 +3904,19 @@ def register_handlers(bot, app_ctx: dict):
                 except Exception as e:
                     await out(f"❌ {e}")
                 return
+            if data == "ng:oshop":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    locked = await game.is_shop_locked_by_owner()
+                    msg = await game.set_shop_locked(pid, not locked)
+                    await out(msg, force_new=True)
+                except Exception as e:
+                    log.exception("oshop")
+                    await out(f"❌ {e}", force_new=True)
+                return
+
             if data.startswith("ng:owar:"):
                 await out(await game.set_war(pid, data.endswith(":1")))
                 return
@@ -4415,6 +4429,7 @@ def register_handlers(bot, app_ctx: dict):
                 rows += [
                     [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
                     [(hc_label, "ng:ohardcore")],
+                    [("🔒 قطع/فعال خرید فروشگاه", "ng:oshop")],
                     [("💵 پول همگانی", "ng:ogiveall"), ("💰 پرداخت درآمد روزانه", "ng:odaily")],
                     [("❤️ دیدن HP ها", "ng:ohp"), ("🏅 رنکینگ", "ng:orank")],
                     [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],

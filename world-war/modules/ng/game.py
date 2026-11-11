@@ -846,6 +846,7 @@ class Game:
         return 1.0
 
     async def cart_add(self, pid: int, item: str, qty: float) -> str:
+        await self.assert_can_shop(pid)
         meta = self._cat.get(item) or {}
         if not meta:
             raise GameError("کالا یافت نشد")
@@ -919,6 +920,7 @@ class Game:
         return "\n".join(lines), total, items
 
     async def checkout(self, pid: int, country_code: str) -> str:
+        await self.assert_can_shop(pid)
         try:
             await self.legendary.assert_can_shop(country_code)
         except LegendaryError as e:
@@ -3042,6 +3044,43 @@ class Game:
         await self.admin_log(actor, "unban", f"unban {target}")
         await self.broadcast_log("unban", f"✅ مسدودیت بازیکن {target} برداشته شد.")
         return "رفع مسدودیت انجام شد."
+
+
+    async def is_shop_locked_by_owner(self) -> bool:
+        try:
+            row = await self.db.fetchrow(
+                "SELECT value FROM ng_bot_settings WHERE key=$1", ("shop_locked",)
+            )
+            return str((row or {}).get("value") or "0").strip() in ("1", "true", "on", "yes")
+        except Exception:
+            return False
+
+    async def is_war_open(self) -> bool:
+        try:
+            meta = await self.db.fetchrow("SELECT war_enabled FROM world_meta WHERE id=1")
+            return bool(meta and int(meta.get("war_enabled") or 0) == 1)
+        except Exception:
+            return False
+
+    async def assert_can_shop(self, pid: int | None = None) -> None:
+        """Block shop purchases when owner locked the shop or war is open."""
+        if await self.is_shop_locked_by_owner():
+            raise GameError("فروشگاه غیرفعال شده توسط مالک")
+        if await self.is_war_open():
+            raise GameError("تا وقتی جنگ باز است خرید از فروشگاه ممکن نیست")
+
+    async def set_shop_locked(self, actor: int, locked: bool) -> str:
+        if not self.is_owner(int(actor)):
+            raise GameError("فقط مالک")
+        await self._write_setting_raw("shop_locked", "1" if locked else "0")
+        await self.admin_log(int(actor), "shop_locked", "on" if locked else "off")
+        if locked:
+            return (
+                "🔒 خرید از فروشگاه قطع شد." + chr(10)
+                + "بازیکنان نمی‌توانند چیزی بخرند." + chr(10)
+                + "پیام بازیکن: فروشگاه غیرفعال شده توسط مالک"
+            )
+        return "✅ خرید از فروشگاه دوباره فعال شد."
 
     async def set_war(self, actor: int, enabled: bool) -> str:
         if not self.is_owner(actor):
