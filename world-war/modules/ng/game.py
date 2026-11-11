@@ -3046,13 +3046,28 @@ class Game:
         return "رفع مسدودیت انجام شد."
 
 
+    async def ensure_bot_settings_table(self) -> None:
+        try:
+            await self.db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ng_bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+        except Exception:
+            log.exception("ensure_bot_settings_table")
+
     async def is_shop_locked_by_owner(self) -> bool:
         try:
+            await self.ensure_bot_settings_table()
             row = await self.db.fetchrow(
                 "SELECT value FROM ng_bot_settings WHERE key=$1", ("shop_locked",)
             )
-            return str((row or {}).get("value") or "0").strip() in ("1", "true", "on", "yes")
+            return str((row or {}).get("value") or "0").strip().lower() in ("1", "true", "on", "yes")
         except Exception:
+            log.exception("is_shop_locked_by_owner")
             return False
 
     async def is_war_open(self) -> bool:
@@ -3072,15 +3087,31 @@ class Game:
     async def set_shop_locked(self, actor: int, locked: bool) -> str:
         if not self.is_owner(int(actor)):
             raise GameError("فقط مالک")
+        await self.ensure_bot_settings_table()
         await self._write_setting_raw("shop_locked", "1" if locked else "0")
+        # verify write
+        ok = await self.is_shop_locked_by_owner()
+        if bool(locked) != bool(ok):
+            # force rewrite
+            await self.db.execute(
+                "DELETE FROM ng_bot_settings WHERE key=$1", ("shop_locked",)
+            )
+            await self.db.execute(
+                "INSERT INTO ng_bot_settings (key, value) VALUES ($1,$2)",
+                ("shop_locked", "1" if locked else "0"),
+            )
+            ok = await self.is_shop_locked_by_owner()
         await self.admin_log(int(actor), "shop_locked", "on" if locked else "off")
-        if locked:
+        if ok:
             return (
                 "🔒 خرید از فروشگاه قطع شد." + chr(10)
-                + "بازیکنان نمی‌توانند چیزی بخرند." + chr(10)
-                + "پیام بازیکن: فروشگاه غیرفعال شده توسط مالک"
+                + "وضعیت ذخیره‌شده: قفل فعال" + chr(10)
+                + "بازیکنان پیام می‌بینند: فروشگاه غیرفعال شده توسط مالک"
             )
-        return "✅ خرید از فروشگاه دوباره فعال شد."
+        return (
+            "✅ خرید از فروشگاه دوباره فعال شد." + chr(10)
+            + "وضعیت ذخیره‌شده: قفل خاموش"
+        )
 
     async def set_war(self, actor: int, enabled: bool) -> str:
         if not self.is_owner(actor):
@@ -4056,6 +4087,7 @@ class Game:
 
     async def _write_setting_raw(self, key: str, value: str) -> None:
         """Persist setting without min-length checks used for message texts."""
+        await self.ensure_bot_settings_table()
         value = str(value)
         row = await self.db.fetchrow("SELECT key FROM ng_bot_settings WHERE key=$1", (key,))
         if row:
@@ -4743,6 +4775,20 @@ class Game:
                 )
             except Exception:
                 log.exception("npt owner dm %s", oid)
+        # Away mode: auto-approve NPT join/leave
+        try:
+            if await self.get_owner_away():
+                try:
+                    auto_msg = await self.review_npt(rid, True, int(self.owner_id))
+                    return (
+                        f"✅ درخواست {label} ثبت و به‌خاطر حالت «در دسترس نیستم» خودکار تأیید شد."
+                        + chr(10) + str(auto_msg)
+                    )
+                except Exception:
+                    log.exception("away auto npt")
+        except Exception:
+            log.exception("away npt check")
+
         return f"✅ درخواست «{label}» ثبت شد و برای مالک ارسال گردید."
 
     async def review_npt(self, request_id: int, approve: bool, actor: int) -> str:
@@ -7102,6 +7148,7 @@ class Game:
     async def set_owner_away(self, actor: int, enabled: bool) -> str:
         if not self.is_owner(actor):
             raise GameError("مجاز نیستید")
+        await self.ensure_bot_settings_table()
         val = "1" if enabled else "0"
         row = await self.db.fetchrow("SELECT key FROM ng_bot_settings WHERE key=$1", ("owner_away",))
         if row:
@@ -7113,9 +7160,139 @@ class Game:
                 "INSERT INTO ng_bot_settings (key, value) VALUES ($1,$2)", ("owner_away", val)
             )
         await self.admin_log(actor, "owner_away", val)
+        extra = ""
         if enabled:
-            return "🔕 حالت «در دسترس نیستم» فعال شد. بیانیه‌ها خودکار منتشر می‌شوند."
-        return "🔔 حالت «در دسترس نیستم» غیرفعال شد. بیانیه‌ها نیاز به تأیید دارند."
+            try:
+                extra = await self.process_away_auto_queue(int(actor))
+            except Exception:
+                log.exception("process_away_auto_queue")
+                extra = ""
+            return (
+                "🔕 حالت «در دسترس نیستم» فعال شد." + chr(10)
+                + "بیانیه‌ها / NPT / قوانین از این به بعد خودکار تأیید می‌شوند."
+                + (("" + chr(10) + extra) if extra else "")
+            )
+        return "🔔 حالت «در دسترس نیستم» غیرفعال شد. موارد جدید نیاز به تأیید دستی دارند."
+
+    async def process_away_auto_queue(self, actor: int) -> str:
+        """Approve pending NPT + laws immediately when away turns on."""
+        import random
+        lines = []
+        # NPT
+        n_ok = 0
+        try:
+            pending = await self.pending_npt_list()
+            for r in pending or []:
+                try:
+                    await self.review_npt(int(r["id"]), True, int(actor))
+                    n_ok += 1
+                except Exception:
+                    log.exception("auto npt %s", r.get("id"))
+        except Exception:
+            log.exception("auto npt list")
+        if n_ok:
+            lines.append(f"☢ درخواست NPT خودکار تأیید شد: {n_ok}")
+        # Laws
+        l_ok = 0
+        try:
+            laws = await self.control.pending_laws()
+            for law in laws or []:
+                try:
+                    bonus = float(random.randint(1_000_000, 5_000_000))
+                    await self.control.review_law(int(law["id"]), int(actor), True, bonus)
+                    l_ok += 1
+                except Exception:
+                    log.exception("auto law %s", law.get("id"))
+        except Exception:
+            log.exception("auto law list")
+        if l_ok:
+            lines.append(f"📜 قانون در صف تأیید خودکار شد: {l_ok} (پاداش ۱ تا ۵ میلیون)")
+        # Statements already auto in submit_statement
+        return chr(10).join(lines) if lines else "صف انتظاری برای تأیید خودکار نبود."
+
+    async def owner_admin_summary(self) -> str:
+        """Dashboard text shown on /admin."""
+        lines = ["🛡 خلاصه وضعیت پنل مالک", "━━━━━━━━━━━━━━"]
+        try:
+            la = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_laws WHERE status='approved'"
+            )
+            lr = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_laws WHERE status='rejected'"
+            )
+            lp = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_laws WHERE status='pending'"
+            )
+            lines.append(
+                f"📜 قوانین — تصویب: {int((la or {}).get('c') or 0)} | "
+                f"رد: {int((lr or {}).get('c') or 0)} | "
+                f"در انتظار: {int((lp or {}).get('c') or 0)}"
+            )
+        except Exception:
+            lines.append("📜 قوانین — نامشخص")
+        try:
+            sa = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_statements WHERE status='approved'"
+            )
+            sp = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_statements WHERE status='pending'"
+            )
+            sr = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_statements WHERE status='rejected'"
+            )
+            lines.append(
+                f"📣 بیانیه‌ها — تأیید: {int((sa or {}).get('c') or 0)} | "
+                f"رد: {int((sr or {}).get('c') or 0)} | "
+                f"در انتظار: {int((sp or {}).get('c') or 0)}"
+            )
+        except Exception:
+            lines.append("📣 بیانیه‌ها — نامشخص")
+        try:
+            np = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_npt_requests WHERE status='pending'"
+            )
+            na = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_npt_requests WHERE status='approved'"
+            )
+            lines.append(
+                f"☢ NPT — تأییدشده: {int((na or {}).get('c') or 0)} | "
+                f"در انتظار: {int((np or {}).get('c') or 0)}"
+            )
+        except Exception:
+            lines.append("☢ NPT — نامشخص")
+        try:
+            total_p = await self.db.fetchrow("SELECT COUNT(*) AS c FROM ng_players")
+            owned = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_countries WHERE owner_player_id IS NOT NULL"
+            )
+            lines.append(
+                f"👥 بازیکنان ثبت‌شده: {int((total_p or {}).get('c') or 0)} | "
+                f"کشور دارای رهبر: {int((owned or {}).get('c') or 0)}"
+            )
+        except Exception:
+            pass
+        try:
+            # players joined last 24h if joined_at exists
+            from datetime import timedelta
+            since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            new_p = await self.db.fetchrow(
+                "SELECT COUNT(*) AS c FROM ng_players WHERE joined_at IS NOT NULL AND joined_at >= $1",
+                (since,),
+            )
+            lines.append(f"🆕 بازیکن جدید ۲۴ساعته: {int((new_p or {}).get('c') or 0)}")
+        except Exception:
+            pass
+        try:
+            away = await self.get_owner_away()
+            shop = await self.is_shop_locked_by_owner()
+            war = await self.is_war_open()
+            lines.append("━━━━━━━━━━━━━━")
+            lines.append(f"🔕 در دسترس نیستم: {'فعال' if away else 'خاموش'}")
+            lines.append(f"🔒 قفل فروشگاه: {'فعال' if shop else 'خاموش'}")
+            lines.append(f"⚔️ جنگ: {'باز' if war else 'بسته'}")
+        except Exception:
+            pass
+        return chr(10).join(lines)
 
     def _make_ref_code(self, pid: int) -> str:
         return f"WW{int(pid)}"

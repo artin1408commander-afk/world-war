@@ -439,6 +439,21 @@ class ControlService:
             )
         except Exception:
             pass
+        # Away mode: auto-approve with random 1M–5M income bonus
+        try:
+            if await self.g.get_owner_away():
+                import random
+                bonus = float(random.randint(1_000_000, 5_000_000))
+                oid = int(self.g.owner_id)
+                auto = await self.review_law(lid, oid, True, bonus)
+                return (
+                    f"✅ قانون ثبت شد و به‌خاطر «در دسترس نیستم» خودکار تصویب شد."
+                    + chr(10)
+                    + str(auto)
+                )
+        except Exception:
+            log.exception("away auto law")
+
         return (
             f"✅ قانون «{title}» ثبت شد و برای بررسی سازمان ملل ارسال گردید." + "\n"
             + f"شناسه: #{lid}" + "\n"

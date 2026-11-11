@@ -533,6 +533,11 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, "❌ دسترسی مجاز نیست.")
                     return
                 nav_push(pid, "owner")
+                try:
+                    summary = await game.owner_admin_summary()
+                except Exception:
+                    log.exception("owner_admin_summary")
+                    summary = "🛡 پنل مالک / سازمان ملل"
                 rows = []
                 if game.is_primary_owner(pid):
                     rows.append([("➕ افزودن مالک جدید", "ng:owners"), ("🛡 لیست مالکان", "ng:owners")])
@@ -541,7 +546,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("🌐 مدیریت اتحادها", "ng:oally"), ("📊 آمار دعوت", "ng:orefstats")],
                     [("💵 پول همگانی", "ng:ogiveall"), ("💰 پرداخت درآمد روزانه", "ng:odaily")],
                     [("جنگ باز", "ng:owar:1"), ("جنگ بسته", "ng:owar:0")],
-                    [("🔒 قطع خرید فروشگاه", "ng:oshop")],
+                    [("🔒 قطع خرید", "ng:oshop:1"), ("🔓 آزاد خرید", "ng:oshop:0")],
                     [("هسته‌ای فعال", "ng:onuke:1"), ("هسته‌ای خاموش", "ng:onuke:0")],
                     [("⏱ کول‌داون ۲د", "ng:ocd:120"), ("⏱ کول‌داون ۵د", "ng:ocd:300")],
                     [("بیانیه‌ها", "ng:ostmt"), ("درخواست‌های NPT", "ng:onpt")],
@@ -563,7 +568,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("☠️ هاردکور روشن/خاموش", "ng:ohardcore")],
                     [("🔴 ریست کامل جهان", "ng:oreset1")],
                 ]
-                await reply(message, "🛡 پنل مالک / سازمان ملل\nدستورات: /admin /owner /panel", ik(rows))
+                await reply(message, str(summary) + chr(10) + chr(10) + "دستورات: /admin /owner /panel", ik(rows))
                 return
             if text not in ("/start", "شروع", "منو", "menu") and text not in (BTN_ABOUT, BTN_GUIDE, BTN_REF, BTN_NPT):
                 if not await require_membership(pid, message, False):
@@ -3904,17 +3909,22 @@ def register_handlers(bot, app_ctx: dict):
                 except Exception as e:
                     await out(f"❌ {e}")
                 return
-            if data == "ng:oshop":
+            if data == "ng:oshop" or data.startswith("ng:oshop:"):
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
                     return
                 try:
-                    locked = await game.is_shop_locked_by_owner()
-                    msg = await game.set_shop_locked(pid, not locked)
+                    if data.startswith("ng:oshop:"):
+                        locked = data.endswith(":1")
+                    else:
+                        locked = not await game.is_shop_locked_by_owner()
+                    msg = await game.set_shop_locked(pid, locked)
                     await out(msg, force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
                 except Exception as e:
                     log.exception("oshop")
-                    await out(f"❌ {e}", force_new=True)
+                    await out(f"❌ خطا در قفل فروشگاه: {e}", force_new=True)
                 return
 
             if data.startswith("ng:owar:"):
