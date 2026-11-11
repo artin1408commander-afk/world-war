@@ -3692,6 +3692,90 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ خطا در رفع محدودیت: {e}")
                 return
 
+
+            if data.startswith("ng:ousetcty:") and not data.startswith("ng:ousetctygo:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    tid = int(str(data).split(":")[2])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                page = 0
+                parts = str(data).split(":")
+                if len(parts) >= 4 and str(parts[3]).isdigit():
+                    page = int(parts[3])
+                try:
+                    countries, total = await game.list_free_countries_for_assign(page=page, page_size=15)
+                    if not countries and total == 0:
+                        await out("کشور آزادی برای تخصیص نیست.", ik([[("👤 بازگشت", f"ng:ou:{tid}")]]), force_new=True)
+                        return
+                    rows = []
+                    for c in countries:
+                        label = f"{c.get('flag') or ''} {c.get('name_fa') or c['country_code']}".strip()
+                        rows.append([(label[:40], f"ng:ousetctygo:{tid}:{c['country_code']}")])
+                    nav = []
+                    if page > 0:
+                        nav.append(("⬅️ قبلی", f"ng:ousetcty:{tid}:{page-1}"))
+                    if (page + 1) * 15 < total:
+                        nav.append(("بعدی ➡️", f"ng:ousetcty:{tid}:{page+1}"))
+                    if nav:
+                        rows.append(nav)
+                    rows.append([("✍️ ورود کد کشور", f"ng:ousetctytype:{tid}")])
+                    rows.append([("👤 بازگشت", f"ng:ou:{tid}")])
+                    await out(
+                        f"🗺 تنظیم کشور برای بازیکن {tid}" + chr(10)
+                        + f"کشور آزاد را انتخاب کنید (صفحه {page+1}):",
+                        ik(rows),
+                        force_new=True,
+                    )
+                except Exception as e:
+                    log.exception("ousetcty")
+                    await out(f"❌ {e}", force_new=True)
+                return
+
+            if data.startswith("ng:ousetctytype:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    tid = int(str(data).split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                _pending[pid] = {"kind": "owner_set_country", "target": tid}
+                await out(
+                    f"کد کشور را بفرستید (مثال: IR یا US) برای بازیکن {tid}:",
+                    ik([[("👤 انصراف", f"ng:ou:{tid}")]]),
+                    force_new=True,
+                )
+                return
+
+            if data.startswith("ng:ousetctygo:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                parts = str(data).split(":")
+                if len(parts) < 4:
+                    await out("❌ داده نامعتبر", force_new=True)
+                    return
+                try:
+                    tid = int(parts[2])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                code = parts[3].strip().upper()
+                try:
+                    msg = await game.admin_assign_country(pid, tid, code)
+                    await out(msg, ik([[("👤 پروفایل", f"ng:ou:{tid}")], [("🏠 خانه", "ng:home")]]), force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", ik([[("🗺 دوباره", f"ng:ousetcty:{tid}")], [("👤 بازگشت", f"ng:ou:{tid}")]]), force_new=True)
+                except Exception as e:
+                    log.exception("ousetctygo")
+                    await out(f"❌ خطا: {e}", force_new=True)
+                return
+
             if data.startswith("ng:orec:") and not data.startswith("ng:orecgo:"):
                 try:
                     tid = int(str(data).split(":")[-1])
@@ -3699,12 +3783,17 @@ def register_handlers(bot, app_ctx: dict):
                     await out("❌ شناسه نامعتبر")
                     return
                 try:
-                    snap = await game.db.fetchrow(
-                        "SELECT * FROM ng_destroy_snapshots WHERE player_id=$1 AND recovered=0 ORDER BY id DESC LIMIT 1",
-                        (tid,),
-                    )
+                    snap = await game.get_latest_destroy_snapshot(tid)
                     if not snap:
-                        await out("❌ اسنپ‌شات نابودی نیست. ریکاوری فقط تا ۶ ساعت بعد از نابودی ممکن است.", ik([[("👤 بازگشت", f"ng:ou:{tid}")]]))
+                        await out(
+                            "❌ اسنپ‌شات نابودی برای این بازیکن پیدا نشد.\n"
+                            "می‌توانید با «🗺 تنظیم کشور» دستی کشور بدهید.",
+                            ik([
+                                [("🗺 تنظیم کشور", f"ng:ousetcty:{tid}")],
+                                [("👤 بازگشت", f"ng:ou:{tid}")],
+                            ]),
+                            force_new=True,
+                        )
                         return
                     cname = await game.country_label(snap["country_code"])
                     hp_full = int(float(snap.get("max_hp") or 1000) or 1000)
@@ -4331,7 +4420,8 @@ def register_handlers(bot, app_ctx: dict):
                     [("🧬 جان ×۲ روشن", f"ng:oudblon:{tid}"), ("🧬 جان ×۲ خاموش", f"ng:oudbloff:{tid}")],
                     *cd_row,
                     [("⏱ رفع محدودیت ۳۰دقیقه", f"ng:dcd:{tid}")],
-                    [("♻️ ریکاوری ۶ ساعته", f"ng:orec:{tid}")],
+                    [("♻️ ریکاوری نابودی", f"ng:orec:{tid}")],
+                    [("🗺 تنظیم کشور", f"ng:ousetcty:{tid}")],
                     [("🪖 تنظیم تجهیزات", f"ng:oueq:{tid}")],
                     [("🎁 آیتم لجندری", f"ng:olegp:{tid}")],
                     [("♻️ ریست کردن کاربر", f"ng:oureset:{tid}")],

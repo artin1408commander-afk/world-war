@@ -5965,16 +5965,15 @@ class Game:
         if not player_id or not country_code:
             return
         try:
-            existing = await tx.fetchrow(
+            # close previous unrecovered snapshots so the newest destroy is recoverable
+            await tx.execute(
                 """
-                SELECT id FROM ng_destroy_snapshots
-                WHERE player_id=$1 AND recovered=0
-                ORDER BY id DESC LIMIT 1
+                UPDATE ng_destroy_snapshots
+                SET recovered=1, recovered_at=$1
+                WHERE player_id=$2 AND COALESCE(recovered,0)=0
                 """,
-                (int(player_id),),
+                (datetime.now(timezone.utc).isoformat(), int(player_id)),
             )
-            if existing:
-                return
         except Exception:
             pass
         c = await tx.fetchrow(
@@ -6188,49 +6187,80 @@ class Game:
         )
 
 
-    async def recover_destroyed_player(self, actor: int, target_id: int) -> str:
-        """Within 6 hours of destroy: restore same country to peak money/equipment and full HP."""
-        if not self.is_owner(int(actor)):
-            raise GameError("فقط مالک")
-        target_id = int(target_id)
-        p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (target_id,))
-        if not p:
-            raise GameError("بازیکن یافت نشد")
-        # cannot recover if already owns a country
-        live = await self.resolve_country_for_player(target_id)
-        if live:
-            raise GameError("این بازیکن هم‌اکنون کشور دارد. ریکاوری ممکن نیست.")
+    async def ensure_destroy_snapshots_table(self) -> None:
+        try:
+            await self.db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ng_destroy_snapshots (
+                    id INTEGER PRIMARY KEY,
+                    player_id INTEGER NOT NULL,
+                    country_code TEXT NOT NULL,
+                    treasury REAL NOT NULL DEFAULT 0,
+                    max_hp REAL NOT NULL DEFAULT 1000,
+                    inventory_json TEXT NOT NULL DEFAULT '[]',
+                    buildings_json TEXT NOT NULL DEFAULT '[]',
+                    destroyed_at TEXT NOT NULL,
+                    recovered INTEGER NOT NULL DEFAULT 0,
+                    recovered_at TEXT
+                )
+                """
+            )
+        except Exception:
+            log.exception("ensure_destroy_snapshots_table")
+
+    async def get_latest_destroy_snapshot(self, player_id: int):
+        """Latest snapshot for player (prefer unrecovered, else any)."""
+        await self.ensure_destroy_snapshots_table()
+        pid = int(player_id)
         snap = await self.db.fetchrow(
             """
             SELECT * FROM ng_destroy_snapshots
-            WHERE player_id=$1 AND recovered=0
+            WHERE player_id=$1 AND COALESCE(recovered,0)=0
             ORDER BY id DESC LIMIT 1
             """,
-            (target_id,),
+            (pid,),
         )
+        if snap:
+            return snap
+        return await self.db.fetchrow(
+            """
+            SELECT * FROM ng_destroy_snapshots
+            WHERE player_id=$1
+            ORDER BY id DESC LIMIT 1
+            """,
+            (pid,),
+        )
+
+    async def recover_destroyed_player(self, actor: int, target_id: int) -> str:
+        """Owner recovery: restore last destroyed country to peak (no hard 6h block for owner)."""
+        if not self.is_owner(int(actor)):
+            raise GameError("فقط مالک")
+        target_id = int(target_id)
+        await self.ensure_destroy_snapshots_table()
+        p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (target_id,))
+        if not p:
+            raise GameError("بازیکن یافت نشد")
+        live = await self.resolve_country_for_player(target_id)
+        if live:
+            raise GameError(
+                f"این بازیکن هم‌اکنون کشور دارد ({live}). "
+                "اول کشور فعلی را آزاد/ریست کنید یا از «تنظیم کشور» استفاده کنید."
+            )
+        snap = await self.get_latest_destroy_snapshot(target_id)
         if not snap:
             raise GameError(
                 "اسنپ‌شات نابودی برای این بازیکن پیدا نشد.\n"
-                "ریکاوری فقط تا ۶ ساعت بعد از نابودی ممکن است."
-            )
-        destroyed_at = snap["destroyed_at"]
-        try:
-            dt = datetime.fromisoformat(str(destroyed_at).replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            raise GameError("زمان نابودی نامعتبر است")
-        age = (datetime.now(timezone.utc) - dt).total_seconds()
-        if age > RECOVERY_WINDOW_SEC:
-            raise GameError(
-                f"مهلت ۶ ساعته ریکاوری تمام شده است "
-                f"({int(age // 60)} دقیقه از نابودی گذشته)."
+                "از دکمه «🗺 تنظیم کشور» در پروفایل، کشور را دستی به او بدهید."
             )
         code = str(snap["country_code"]).upper()
-        inv_list = json.loads(snap.get("inventory_json") or "[]")
+        inv_list = []
+        try:
+            inv_list = json.loads(snap.get("inventory_json") or "[]")
+        except Exception:
+            inv_list = []
         treasury = float(snap.get("treasury") or 0)
-        max_hp = float(snap.get("max_hp") or 1000)
-        full_hp = float(max_hp) if max_hp > 0 else 1000.0
+        max_hp = float(snap.get("max_hp") or 1000) or 1000.0
+        full_hp = float(max_hp)
         now = datetime.now(timezone.utc).isoformat()
 
         async with self.db.transaction() as tx:
@@ -6238,13 +6268,13 @@ class Game:
                 "SELECT * FROM ng_countries WHERE country_code=$1", (code,)
             )
             if not c:
-                raise GameError("کشور اسنپ‌شات در دیتابیس نیست")
+                raise GameError(f"کشور اسنپ‌شات ({code}) در دیتابیس نیست")
             owner = c.get("owner_player_id")
             if owner and int(owner) != target_id:
                 raise GameError(
-                    f"کشور {code} الان بازیکن دیگری دارد و قابل ریکاوری نیست."
+                    f"کشور الان بازیکن دیگری دارد (id={owner}) و قابل ریکاوری نیست.\n"
+                    "از «تنظیم کشور» یک کشور آزاد انتخاب کنید."
                 )
-            # Full restore: money + equipment peak + full HP
             await tx.execute(
                 """
                 UPDATE ng_countries
@@ -6254,16 +6284,19 @@ class Game:
                 """,
                 (int(target_id), treasury, full_hp, max_hp, now, code),
             )
-            # inventory from snapshot
             await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (code,))
             for it in inv_list:
-                qty = float(it.get("quantity") or 0)
-                if qty <= 0:
-                    continue
-                await tx.execute(
-                    "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
-                    (code, it["item_code"], qty),
-                )
+                try:
+                    qty = float(it.get("quantity") or 0)
+                    ic = it.get("item_code")
+                    if qty <= 0 or not ic:
+                        continue
+                    await tx.execute(
+                        "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
+                        (code, ic, qty),
+                    )
+                except Exception:
+                    log.exception("recover inv item")
             await tx.execute(
                 """
                 UPDATE ng_players
@@ -6272,35 +6305,107 @@ class Game:
                 """,
                 (code, target_id),
             )
-            await tx.execute(
-                """
-                UPDATE ng_destroy_snapshots
-                SET recovered=1, recovered_at=$1
-                WHERE id=$2
-                """,
-                (now, int(snap["id"])),
-            )
+            try:
+                await tx.execute(
+                    """
+                    UPDATE ng_destroy_snapshots
+                    SET recovered=1, recovered_at=$1
+                    WHERE id=$2
+                    """,
+                    (now, int(snap["id"])),
+                )
+            except Exception:
+                log.exception("mark snapshot recovered")
 
         label = await self.country_label(code)
         await self.admin_log(
             actor, "destroy_recover",
             f"target={target_id} country={code} hp={int(full_hp)} treasury={int(treasury)}",
         )
-        await self.log_activity(
-            "admin",
-            f"ریکاوری ۶ ساعته بازیکن {target_id} → {label} | HP={int(full_hp)}",
-            code,
-            actor,
-        )
         return (
             f"✅ ریکاوری کامل انجام شد.\n"
             f"بازیکن: {target_id}\n"
             f"کشور: {label}\n"
-            f"خزانه بازگردانی‌شده: {int(treasury):,} تومان\n"
-            f"تجهیزات بازگردانی‌شده: {len(inv_list)} نوع\n"
-            f"سلامت: {int(full_hp)} / {int(max_hp)} (کامل)\n"
-            f"محدودیت ۳۰ دقیقه هم برداشته شد."
+            f"خزانه: {int(treasury):,} تومان\n"
+            f"تجهیزات: {len(inv_list)} نوع\n"
+            f"HP: {int(full_hp)}/{int(max_hp)}"
         )
+
+    async def admin_assign_country(self, actor: int, target_id: int, country_code: str) -> str:
+        """Owner forces a free country onto a player (manual set)."""
+        if not self.is_owner(int(actor)):
+            raise GameError("فقط مالک")
+        target_id = int(target_id)
+        code = str(country_code or "").strip().upper()
+        if not code:
+            raise GameError("کد کشور نامعتبر")
+        if self.is_un_country(code):
+            raise GameError("کشور سازمان ملل قابل تخصیص دستی نیست")
+        p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (target_id,))
+        if not p:
+            raise GameError("بازیکن یافت نشد")
+        c = await self.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (code,))
+        if not c:
+            raise GameError("کشور یافت نشد")
+        owner = c.get("owner_player_id")
+        if owner and int(owner) != target_id:
+            raise GameError("این کشور الان بازیکن دیگری دارد")
+        # free player's current country if different
+        live = await self.resolve_country_for_player(target_id)
+        now = datetime.now(timezone.utc).isoformat()
+        async with self.db.transaction() as tx:
+            if live and str(live).upper() != code:
+                await tx.execute(
+                    """
+                    UPDATE ng_countries
+                    SET owner_player_id=NULL, is_destroyed=0
+                    WHERE country_code=$1 AND owner_player_id=$2
+                    """,
+                    (str(live).upper(), target_id),
+                )
+            max_hp = float(c.get("max_hp") or 1000) or 1000.0
+            hp = float(c.get("hp") or max_hp)
+            if hp <= 0:
+                hp = max_hp
+            await tx.execute(
+                """
+                UPDATE ng_countries
+                SET owner_player_id=$1, is_destroyed=0, hp=$2, max_hp=$3, claimed_at=$4
+                WHERE country_code=$5
+                """,
+                (target_id, hp, max_hp, now, code),
+            )
+            await tx.execute(
+                """
+                UPDATE ng_players
+                SET country_code=$1, destroy_cooldown_until=NULL
+                WHERE player_id=$2
+                """,
+                (code, target_id),
+            )
+        label = await self.country_label(code)
+        await self.admin_log(actor, "assign_country", f"{target_id}->{code}")
+        return f"✅ کشور «{label}» برای بازیکن {target_id} تنظیم شد.\nHP: {int(hp)}/{int(max_hp)}"
+
+    async def list_free_countries_for_assign(self, page: int = 0, page_size: int = 20):
+        page = max(0, int(page))
+        page_size = max(5, min(30, int(page_size)))
+        rows = await self.db.fetch(
+            """
+            SELECT country_code, name_fa, flag, entity_type
+            FROM ng_countries
+            WHERE owner_player_id IS NULL
+              AND COALESCE(is_destroyed,0)=0
+            ORDER BY name_fa
+            """
+        )
+        # filter UN codes
+        free = [r for r in (rows or []) if not self.is_un_country(r["country_code"])]
+        total = len(free)
+        start = page * page_size
+        chunk = free[start : start + page_size]
+        return chunk, total
+
 
     async def reset_player(self, actor: int, target_id: int) -> str:
         """Free player country and progress; keep identity, bans, audit logs.
