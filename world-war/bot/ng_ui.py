@@ -934,7 +934,7 @@ def register_handlers(bot, app_ctx: dict):
                         await reply(message, f"❌ {e}")
                     except Exception:
                         log.exception("owner_give_all")
-                        await reply(message, "❌ خطا در واریز همگانی")
+                        await reply(message, "❌ خطا در پول همگانی")
                     return
                 if kind == "admin_money":
                     try:
@@ -3960,9 +3960,11 @@ def register_handlers(bot, app_ctx: dict):
             if data == "ng:ogiveall":
                 _pending[pid] = {"kind": "owner_give_all"}
                 await out(
-                    "💵 واریز همگانی به همه کشورهای بازیکن\n"
-                    "مبلغ یکسان برای هر کشور را بنویسید:\n"
-                    "مثال: 5000000",
+                    "💵 پول همگانی (واریز / کسر)" + chr(10)
+                    + "مبلغ یکسان برای همه کشورهای بازیکن را بنویسید:" + chr(10) + chr(10)
+                    + "مثال واریز: 5000000" + chr(10)
+                    + "مثال کسر از همه: -10000" + chr(10) + chr(10)
+                    + "عدد منفی = کم کردن از خزانه‌ی همه",
                     ik([cancel_row()]),
                 )
                 return

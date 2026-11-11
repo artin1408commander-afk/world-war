@@ -3205,14 +3205,19 @@ class Game:
         ])
 
     async def admin_give_all_players(self, actor: int, amount: float) -> str:
-        """Owner grants the same amount to every owned player country (not UN)."""
+        """Owner grants or deducts the same amount for every owned player country (not UN).
+
+        Positive amount → add to all.
+        Negative amount (e.g. -10000) → deduct from all (capped at each country's balance).
+        """
         if not self.is_owner(actor):
             raise GameError("مجاز نیستید")
         amount = float(amount)
-        if amount <= 0:
-            raise GameError("مبلغ باید مثبت باشد")
-        if amount > 5_000_000_000:
-            raise GameError("سقف هر واریز همگانی ۵ میلیارد است")
+        if amount == 0:
+            raise GameError("مبلغ صفر نامعتبر است")
+        abs_amt = abs(amount)
+        if abs_amt > 5_000_000_000:
+            raise GameError("سقف هر عملیات همگانی ۵ میلیارد است")
         rows = await self.db.fetch(
             "SELECT country_code, name_fa, owner_player_id, treasury FROM ng_countries "
             "WHERE owner_player_id IS NOT NULL AND country_code<>$1 AND COALESCE(is_destroyed,0)=0",
@@ -3220,34 +3225,65 @@ class Game:
         )
         if not rows:
             raise GameError("هیچ کشور بازیکنی یافت نشد")
-        ok, fail = 0, 0
+        ok, fail, skipped = 0, 0, 0
+        total_moved = 0.0
+        is_take = amount < 0
         for r in rows:
             try:
+                code = r["country_code"]
+                if is_take:
+                    bal = float(r.get("treasury") or 0)
+                    deduct = min(bal, abs_amt)
+                    if deduct <= 0:
+                        skipped += 1
+                        continue
+                    delta = -deduct
+                else:
+                    delta = abs_amt
                 await self.adjust_treasury(
-                    r["country_code"], amount, actor=actor, reason=f"give_all:{actor}"
+                    code,
+                    delta,
+                    actor=actor,
+                    reason=("take_all:" if is_take else "give_all:") + str(actor),
                 )
+                total_moved += abs(delta)
                 ok += 1
+                # keep persistent cash aligned
+                try:
+                    await self.sync_cash_from_country(code)
+                except Exception:
+                    pass
             except Exception:
-                log.exception("give_all %s", r["country_code"])
+                log.exception("give_all %s", r.get("country_code"))
                 fail += 1
+        title = "💸 کسر همگانی توسط سازمان ملل" if is_take else "💵 واریز همگانی توسط سازمان ملل"
+        verb = "کسر" if is_take else "واریز"
         try:
             await self.broadcast_log(
                 "admin",
                 chr(10).join([
-                    "💵 واریز همگانی توسط سازمان ملل",
-                    f"مبلغ هر کشور: {int(amount):,}",
-                    f"موفق: {ok} | ناموفق: {fail}",
+                    title,
+                    f"مبلغ هر کشور: {int(amount):+,}",
+                    f"موفق: {ok} | ناموفق: {fail}" + (f" | بدون موجودی: {skipped}" if skipped else ""),
                 ]),
             )
         except Exception:
             pass
-        await self.admin_log(actor, "give_all", f"amount={amount} ok={ok} fail={fail}")
-        return chr(10).join([
-            "✅ واریز همگانی انجام شد.",
-            f"مبلغ هر کشور: {int(amount):,}",
+        await self.admin_log(
+            actor,
+            "take_all" if is_take else "give_all",
+            f"amount={amount} ok={ok} fail={fail} skipped={skipped}",
+        )
+        lines = [
+            f"✅ {verb} همگانی انجام شد.",
+            f"مبلغ درخواستی هر کشور: {int(amount):+,}",
             f"موفق: {ok}",
             f"ناموفق: {fail}",
-        ])
+        ]
+        if skipped:
+            lines.append(f"بدون موجودی (رد شد): {skipped}")
+        lines.append(f"جمع کل جابه‌جا شده: {int(total_moved):,}")
+        return chr(10).join(lines)
 
     async def admin_give_to_player(self, actor: int, target_pid: int, amount: float) -> str:
         if not self.is_owner(actor):
