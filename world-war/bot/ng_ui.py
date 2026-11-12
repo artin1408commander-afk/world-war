@@ -662,9 +662,9 @@ def register_handlers(bot, app_ctx: dict):
                     [("🎭 گروه هکری آنانیموس", "ng:ohack")],
                     [("💎 حمایت مالی", "ng:odonate")],
                     [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
-                    [("🔒 محدودیت لجندری روشن", "ng:oleglock:1")],
-                    [("🔓 محدودیت لجندری خاموش", "ng:oleglock:0")],
-                    [("🔒 وضعیت محدودیت لجندری", "ng:oleglock")],
+                    [("🔒 محدودیت لجندری روشن", "ng:llock:1")],
+                    [("🔓 محدودیت لجندری خاموش", "ng:llock:0")],
+                    [("🔒 وضعیت محدودیت لجندری", "ng:llock")],
                     [("🏷 قیمت فروشگاه", "ng:oprices"), ("🏷 تخفیف فروشگاه", "ng:odiscount")],
                     [("☠️ هاردکور روشن", "ng:ohardcore:1")],
                     [("🕊 هاردکور خاموش", "ng:ohardcore:0")],
@@ -1996,6 +1996,40 @@ def register_handlers(bot, app_ctx: dict):
                     log.exception("ocdstd")
                     await out(f"❌ خطا در تنظیم کول‌داون: {e}", force_new=True)
                 return
+
+            # ---- legendary global lock (early) ----
+            if data == "ng:llock" or data.startswith("ng:llock:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    parts = data.split(":")
+                    if len(parts) >= 3 and parts[2] in ("0", "1"):
+                        en = parts[2] == "1"
+                        msg = await game.legendary.set_locked(pid, en)
+                    else:
+                        on = await game.legendary.is_locked()
+                        msg = ("🔒 محدودیت لجندری: روشن" if on else "✅ محدودیت لجندری: خاموش")
+                        msg += "\n" + (
+                            "خرید و استفاده و همه اثرها غیرفعال‌اند."
+                            if on else
+                            "خرید و استفاده آزاد است."
+                        )
+                    on = await game.legendary.is_locked()
+                    await out(
+                        str(msg) + "\n\n" + ("وضعیت فعلی: 🔒 روشن" if on else "وضعیت فعلی: ✅ خاموش"),
+                        ik([
+                            [("🔒 روشن کردن محدودیت", "ng:llock:1")],
+                            [("🔓 خاموش کردن محدودیت", "ng:llock:0")],
+                            [("🔄 بررسی وضعیت", "ng:llock")],
+                            [("⬅️ پنل مالک", "ng:opanel")],
+                        ]),
+                        force_new=True,
+                    )
+                except Exception as e:
+                    log.exception("llock")
+                    await out(f"❌ خطا در محدودیت لجندری: {e}", force_new=True)
+                return
             if data.startswith("ng:oucd30on:") or data.startswith("ng:oucd30off:") or data.startswith("ng:oucd30:"):
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
@@ -3097,12 +3131,8 @@ def register_handlers(bot, app_ctx: dict):
 
             # owner legendary mgmt
 
-            if data == "ng:oleglock" or data.startswith("ng:oleglock:"):
-                if not owner:
-                    await out("❌ فقط مالک", force_new=True)
-                    return
                 try:
-                    if data.startswith("ng:oleglock:") and data.split(":")[-1] in ("0", "1"):
+                    if data.startswith("ng:llock:") and data.split(":")[-1] in ("0", "1"):
                         en = data.endswith(":1")
                         msg = await game.legendary.set_locked(pid, en)
                     else:
@@ -3119,9 +3149,9 @@ def register_handlers(bot, app_ctx: dict):
                     await out(
                         msg + chr(10) + chr(10) + ("وضعیت: 🔒 روشن" if on else "وضعیت: ✅ خاموش"),
                         ik([
-                            [("🔒 روشن کردن محدودیت", "ng:oleglock:1")],
-                            [("🔓 خاموش کردن محدودیت", "ng:oleglock:0")],
-                            [("🔄 بررسی وضعیت", "ng:oleglock")],
+                            [("🔒 روشن کردن محدودیت", "ng:llock:1")],
+                            [("🔓 خاموش کردن محدودیت", "ng:llock:0")],
+                            [("🔄 بررسی وضعیت", "ng:llock")],
                             [("⬅️ پنل مالک", "ng:opanel")],
                         ]),
                         force_new=True,
@@ -5017,9 +5047,9 @@ def register_handlers(bot, app_ctx: dict):
                     [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
                     [("🎁 مدیریت لجندری", "ng:oleg"), ("💰 شارژ کیف پول", "ng:owallet")],
                     [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
-                    [("🔒 محدودیت لجندری روشن", "ng:oleglock:1")],
-                    [("🔓 محدودیت لجندری خاموش", "ng:oleglock:0")],
-                    [("🔒 وضعیت محدودیت لجندری", "ng:oleglock")],
+                    [("🔒 محدودیت لجندری روشن", "ng:llock:1")],
+                    [("🔓 محدودیت لجندری خاموش", "ng:llock:0")],
+                    [("🔒 وضعیت محدودیت لجندری", "ng:llock")],
                     [("⬅️ بستن", "ng:home")],
                 ]
                 await out("🛡 پنل مالک / سازمان ملل", ik(rows))

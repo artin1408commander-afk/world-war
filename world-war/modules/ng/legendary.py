@@ -263,7 +263,23 @@ class LegendaryService:
 
     LOCK_MSG = "🔒 سیستم آیتم‌های لجندری توسط مالک قفل شده است. متأسفانه فعلاً امکان خرید/استفاده وجود ندارد."
 
+    async def _ensure_lock_column(self) -> None:
+        try:
+            await self.db.execute(
+                "ALTER TABLE world_meta ADD COLUMN legendary_locked INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+
     async def is_locked(self) -> bool:
+        """Prefer world_meta; fallback ng_bot_settings."""
+        await self._ensure_lock_column()
+        try:
+            meta = await self.db.fetchrow("SELECT legendary_locked FROM world_meta WHERE id=1")
+            if meta is not None and meta.get("legendary_locked") is not None:
+                return int(meta.get("legendary_locked") or 0) == 1
+        except Exception:
+            log.exception("is_locked world_meta")
         try:
             row = await self.db.fetchrow(
                 "SELECT value FROM ng_bot_settings WHERE key=$1", ("legendary_locked",)
@@ -272,18 +288,6 @@ class LegendaryService:
                 return True
         except Exception:
             log.exception("is_locked settings")
-        try:
-            await self.db.execute(
-                "ALTER TABLE world_meta ADD COLUMN legendary_locked INTEGER NOT NULL DEFAULT 0"
-            )
-        except Exception:
-            pass
-        try:
-            meta = await self.db.fetchrow("SELECT legendary_locked FROM world_meta WHERE id=1")
-            if meta is not None and int(meta.get("legendary_locked") or 0) == 1:
-                return True
-        except Exception:
-            pass
         return False
 
     async def assert_not_locked(self) -> None:
@@ -295,12 +299,7 @@ class LegendaryService:
             raise LegendaryError("فقط مالک")
         enabled = bool(enabled)
         flag = 1 if enabled else 0
-        try:
-            await self.db.execute(
-                "ALTER TABLE world_meta ADD COLUMN legendary_locked INTEGER NOT NULL DEFAULT 0"
-            )
-        except Exception:
-            pass
+        await self._ensure_lock_column()
         try:
             await self.db.execute(
                 "UPDATE world_meta SET legendary_locked=$1 WHERE id=1",
@@ -308,15 +307,26 @@ class LegendaryService:
             )
         except Exception:
             log.exception("set legendary_locked world_meta")
+            raise LegendaryError("ذخیره محدودیت لجندری در دیتابیس ناموفق بود")
         try:
             await self.g.ensure_bot_settings_table()
             await self.g._write_setting_raw("legendary_locked", "1" if enabled else "0")
         except Exception:
-            log.exception("set legendary_locked settings")
+            log.exception("mirror legendary_locked settings")
+        ok = await self.is_locked()
+        if bool(ok) != enabled:
+            try:
+                await self.db.execute(
+                    "UPDATE world_meta SET legendary_locked=$1 WHERE id=1",
+                    (flag,),
+                )
+            except Exception:
+                pass
+            ok = await self.is_locked()
         cleared = 0
         if enabled:
             try:
-                cleared = await self.expire_all_active_effects("owner_lock")
+                cleared = int(await self.expire_all_active_effects("owner_lock") or 0)
             except Exception:
                 log.exception("expire on lock")
             try:
@@ -326,28 +336,30 @@ class LegendaryService:
             try:
                 await self.g.log_activity(
                     "admin",
-                    "🔒 محدودیت آیتم لجندری توسط مالک روشن شد — همه اثرها قطع شد",
+                    "🔒 محدودیت آیتم لجندری روشن شد — همه اثرها قطع شد",
                     None,
                     int(actor),
                 )
             except Exception:
                 pass
+            status = "روشن" if ok else "نامشخص (ذخیره را دوباره بزنید)"
             return (
-                "🔒 محدودیت آیتم لجندری روشن شد."
-                + chr(10)
+                f"🔒 محدودیت آیتم لجندری {status} شد."
+                + "\n"
                 + f"اثرهای فعال قطع‌شده: {cleared}"
-                + chr(10)
+                + "\n"
                 + "از این لحظه هیچ‌کس نمی‌تواند لجندری بخرد یا استفاده کند."
-                + chr(10)
-                + "مصونیت/فلج/ممنوعیت اتم و بقیه اثرها دیگر اعمال نمی‌شوند."
+                + "\n"
+                + "مصونیت / فلج خواب / ممنوعیت اتم دیگر اعمال نمی‌شوند."
             )
         try:
             await self.g.admin_log(int(actor), "legendary_lock", "off")
         except Exception:
             pass
+        status = "خاموش" if not ok else "هنوز روشن مانده — دوباره بزنید"
         return (
-            "✅ محدودیت آیتم لجندری خاموش شد."
-            + chr(10)
+            f"✅ محدودیت آیتم لجندری {status} شد."
+            + "\n"
             + "خرید و استفاده دوباره آزاد است."
         )
 
