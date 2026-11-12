@@ -377,10 +377,66 @@ class AllianceGroupPool:
             (int(alliance_id), invite_link, now, int(pool_id)),
         )
 
-    async def _set_title(self, bot, chat_id, title: str) -> None:
+    def _bot_token(self, bot) -> str | None:
+        for attr in ("token", "_token", "bot_token"):
+            v = getattr(bot, attr, None)
+            if v:
+                return str(v)
+        # python-bale-bot sometimes keeps token on http client
+        http = getattr(bot, "http", None) or getattr(bot, "_http", None)
+        if http is not None:
+            for attr in ("token", "_token"):
+                v = getattr(http, attr, None)
+                if v:
+                    return str(v)
+        return None
+
+    async def _http_call(self, bot, method: str, **params):
+        """Call Bale HTTP Bot API (Telegram-compatible style)."""
+        token = self._bot_token(bot)
+        if not token:
+            raise AllianceGroupError("توکن ربات برای API در دسترس نیست")
+        import json
+        import urllib.request
+        import urllib.error
+
+        # official Bale bot API host
+        bases = (
+            f"https://tapi.bale.ai/bot{token}/{method}",
+            f"https://api.bale.ai/bot{token}/{method}",
+        )
+        data = json.dumps(params).encode("utf-8")
+        last = None
+        for url in bases:
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                # run blocking IO off event loop lightly
+                import asyncio
+
+                def _do():
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+                body = await asyncio.to_thread(_do)
+                if not body.get("ok"):
+                    last = body.get("description") or body
+                    continue
+                return body.get("result")
+            except Exception as e:
+                last = e
+                continue
+        raise AllianceGroupError(f"API {method} ناموفق: {last}")
+
+    async def _set_title(self, bot, chat_id, title: str) -> bool:
+        """Best-effort rename. Returns True if renamed; False if skipped/unsupported."""
         cid = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
         title = str(title)[:120]
-        last = None
+        # library methods (if any)
         for name in ("set_chat_title", "setChatTitle", "edit_chat_title"):
             fn = getattr(bot, name, None)
             if not callable(fn):
@@ -389,19 +445,57 @@ class AllianceGroupPool:
                 r = fn(cid, title)
                 if hasattr(r, "__await__"):
                     await r
-                return
+                return True
             except Exception as e:
-                last = e
-        raise AllianceGroupError(f"تغییر نام گروه ممکن نشد: {last}")
+                log.warning("set_title via %s: %s", name, e)
+        # Chat object method
+        try:
+            chat = await bot.get_chat(cid)
+            for name in ("set_title", "set_chat_title", "setTitle"):
+                fn = getattr(chat, name, None)
+                if callable(fn):
+                    r = fn(title)
+                    if hasattr(r, "__await__"):
+                        await r
+                    return True
+        except Exception as e:
+            log.warning("set_title via get_chat obj: %s", e)
+        # raw HTTP
+        try:
+            await self._http_call(bot, "setChatTitle", chat_id=cid, title=title)
+            return True
+        except Exception as e:
+            log.warning("set_title HTTP failed (non-fatal): %s", e)
+            return False
 
     async def _invite(self, bot, chat_id) -> str:
         cid = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
         last = None
+        # 1) get_chat.invite_link (documented in python-bale-bot)
+        for name in ("get_chat", "getChat"):
+            fn = getattr(bot, name, None)
+            if not callable(fn):
+                continue
+            try:
+                r = fn(cid)
+                if hasattr(r, "__await__"):
+                    r = await r
+                link = getattr(r, "invite_link", None)
+                if link:
+                    return str(link).strip()
+                # username public link
+                un = getattr(r, "username", None)
+                if un:
+                    return f"https://ble.ir/{un}"
+            except Exception as e:
+                last = e
+        # 2) library invite methods
         for name in (
             "create_chat_invite_link",
             "export_chat_invite_link",
             "createChatInviteLink",
             "exportChatInviteLink",
+            "export_invite_link",
         ):
             fn = getattr(bot, name, None)
             if not callable(fn):
@@ -417,17 +511,16 @@ class AllianceGroupPool:
                     return str(link).strip()
             except Exception as e:
                 last = e
-        for name in ("get_chat", "getChat"):
-            fn = getattr(bot, name, None)
-            if not callable(fn):
-                continue
+        # 3) HTTP API
+        for method in ("exportChatInviteLink", "createChatInviteLink"):
             try:
-                r = fn(cid)
-                if hasattr(r, "__await__"):
-                    r = await r
-                link = getattr(r, "invite_link", None)
-                if link:
-                    return str(link).strip()
+                result = await self._http_call(bot, method, chat_id=cid)
+                if isinstance(result, str) and result.strip():
+                    return result.strip()
+                if isinstance(result, dict):
+                    link = result.get("invite_link") or result.get("link")
+                    if link:
+                        return str(link).strip()
             except Exception as e:
                 last = e
         raise AllianceGroupError(f"ساخت لینک دعوت ناموفق: {last}")
@@ -445,11 +538,15 @@ class AllianceGroupPool:
         if not bot:
             raise AllianceGroupError("ربات برای مدیریت گروه در دسترس نیست.")
         chat_id = pool["chat_id"]
+        # Rename is best-effort: python-bale-bot 2.5 may not expose setChatTitle
+        renamed = False
         try:
-            await self._set_title(bot, chat_id, f"اتحاد {alliance_name}")
-        except AllianceGroupError:
-            await self.release(int(pool["id"]), free=False, err="rename_failed")
-            raise
+            renamed = await self._set_title(bot, chat_id, f"اتحاد {alliance_name}")
+        except Exception as e:
+            log.warning("rename skipped: %s", e)
+            renamed = False
+        if not renamed:
+            log.info("alliance group rename skipped chat=%s (API unsupported or no permission)", chat_id)
         try:
             await self._send(
                 bot,
