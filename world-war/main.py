@@ -250,6 +250,7 @@ async def async_main() -> None:
             return
 
         bot = await create_bot(settings.bale_token)
+        game.bot = bot
         register_handlers(bot, {"game": game, "settings": settings, "db": db})
         # Drop old queued group logs so restart does not spam the group
         try:

@@ -14,6 +14,7 @@ from modules.ng.catalog import CATALOG, CAT_FA
 from modules.ng import equipment as eq
 from modules.ng.legendary import LegendaryService, LegendaryError
 from modules.ng.alliances import AllianceService, AllianceError, create_cost, DESTROY_WAIT_SEC
+from modules.ng.alliance_groups import AllianceGroupPool, AllianceGroupError
 from modules.ng.control import ControlService, ControlError
 from modules.ng.donations import DonationService, DonationError
 from modules.ng.hacker import HackerService, HackerError, HACKER_CODE, ALLOWED_OWNER_ID
@@ -67,6 +68,7 @@ class Game:
         self.group_id = group_id
         self._cat = {c["item_code"]: c for c in CATALOG}
         self.alliances = AllianceService(self)
+        self.alliance_groups = AllianceGroupPool(self)
         self.legendary = LegendaryService(self)
         self.control = ControlService(self)
         self.donations = DonationService(self)
@@ -74,6 +76,10 @@ class Game:
 
     # ---------- bootstrap ----------
     async def bootstrap(self) -> None:
+        try:
+            await self.alliance_groups.ensure_schema()
+        except Exception:
+            log.exception("alliance group schema")
         meta = await self.db.fetchrow("SELECT * FROM world_meta WHERE id=1")
         now = datetime.now(timezone.utc).isoformat()
         if not meta:

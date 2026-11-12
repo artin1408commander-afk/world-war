@@ -544,6 +544,7 @@ def register_handlers(bot, app_ctx: dict):
                 rows += [
                     [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
                     [("🌐 مدیریت اتحادها", "ng:oally"), ("📊 آمار دعوت", "ng:orefstats")],
+                    [("🏷 گروه‌های رزرو اتحاد", "ng:oapool")],
                     [("💵 پول همگانی", "ng:ogiveall"), ("❤️ جون همگانی", "ng:ohpall")],
                     [("💰 پرداخت درآمد روزانه", "ng:odaily")],
                     [("جنگ باز", "ng:owar:1"), ("جنگ بسته", "ng:owar:0")],
@@ -942,6 +943,19 @@ def register_handlers(bot, app_ctx: dict):
                     except Exception:
                         log.exception("owner_hp_all")
                         await reply(message, "❌ خطا در جون همگانی")
+                    return
+                if kind == "oapool_add":
+                    raw = (text or "").strip()
+                    if "|" in raw:
+                        cid, rname = raw.split("|", 1)
+                    else:
+                        cid, rname = raw, "گروه رزرو اتحاد"
+                    try:
+                        msg = await game.alliance_groups.register(pid, cid.strip(), rname.strip())
+                        _pending.pop(pid, None)
+                        await reply(message, msg, main_kb(owner))
+                    except Exception as e:
+                        await reply(message, f"❌ {e}")
                     return
                 if kind == "owner_give_all":
                     try:
@@ -1630,6 +1644,15 @@ def register_handlers(bot, app_ctx: dict):
                 mem = await game.alliances.member_of(code)
                 if mem:
                     a = await game.alliances.get(mem["alliance_id"])
+                    if a:
+                        try:
+                            gate = await game.alliance_groups.membership_gate(pid, a, bot=bot)
+                        except Exception:
+                            log.exception("ally gate")
+                            gate = None
+                        if gate:
+                            await reply(message, gate, main_kb(owner))
+                            return
                     mems = await game.alliances.members(mem["alliance_id"])
                     labels = {}
                     for m in mems:
@@ -2059,7 +2082,7 @@ def register_handlers(bot, app_ctx: dict):
                 try:
                     mm = int(st.get("max_members") or 2)
                     tc = float(st.get("treasury_cap") or 100_000_000)
-                    msg = await game.alliances.create(pid, code, name, mm, tc)
+                    msg = await game.alliances.create(pid, code, name, mm, tc, bot=bot)
                     _pending.pop(pid, None)
                     await out(msg, main_kb(owner))
                 except (AllianceError, GameError) as e:
@@ -2096,7 +2119,13 @@ def register_handlers(bot, app_ctx: dict):
                     await out("هنوز کشوری تحت فرمان شما نیست.")
                     return
                 try:
-                    await out(await game.alliances.join(pid, code, int(data.split(":")[-1])))
+                    aid = int(data.split(":")[-1])
+                    msg = await game.alliances.join(pid, code, aid)
+                    a = await game.alliances.get(aid)
+                    link = (a or {}).get("group_invite_link") or ""
+                    if link:
+                        msg = str(msg) + chr(10) + chr(10) + "⚠️ عضویت در گروه اتحاد اجباری است:" + chr(10) + str(link)
+                    await out(msg)
                 except (AllianceError, GameError) as e:
                     await out(f"❌ {e}")
                 return
@@ -2197,6 +2226,81 @@ def register_handlers(bot, app_ctx: dict):
                 except (AllianceError, GameError) as e:
                     await out(f"❌ {e}")
                 return
+            if data == "ng:oapool":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    st = await game.alliance_groups.stats()
+                except Exception as e:
+                    log.exception("oapool")
+                    await out(f"❌ {e}", force_new=True)
+                    return
+                lines = [
+                    "🏷 گروه‌های رزرو اتحاد",
+                    "━━━━━━━━━━━━━━",
+                    f"کل: {st['total']}",
+                    f"آزاد: {st['free']}",
+                    f"اختصاص‌یافته: {st['assigned']}",
+                    f"در حال رزرو: {st.get('holding', 0)}",
+                    f"غیرقابل استفاده: {st['unusable']}",
+                    "",
+                ]
+                rows = [[("➕ ثبت گروه رزرو", "ng:oapool:add")], [("🔄 بروزرسانی", "ng:oapool")]]
+                for r in (st.get("rows") or [])[:20]:
+                    aid = r.get("alliance_id")
+                    aname = ""
+                    if aid:
+                        try:
+                            a = await game.alliances.get(int(aid))
+                            aname = (a or {}).get("name") or str(aid)
+                        except Exception:
+                            aname = str(aid)
+                    lines.append(
+                        f"#{r['id']} | {r.get('status')} | chat={r.get('chat_id')}"
+                        + (f" | اتحاد: {aname}" if aname else "")
+                    )
+                    if r.get("status") == "unusable":
+                        rows.append([(f"♻️ آزاد #{r['id']}", f"ng:oapool:free:{r['id']}")])
+                    elif r.get("status") == "free":
+                        rows.append([(f"🚫 غیرفعال #{r['id']}", f"ng:oapool:bad:{r['id']}")])
+                rows.append(back_row())
+                await out(chr(10).join(lines), ik(rows), force_new=True)
+                return
+            if data == "ng:oapool:add":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                _pending[pid] = {"kind": "oapool_add"}
+                await out(
+                    "شناسه عددی گروه رزرو را بفرستید."
+                    + chr(10)
+                    + "ربات باید در آن گروه ادمین باشد."
+                    + chr(10)
+                    + "اختیاری: chat_id|نام رزرو",
+                    ik([cancel_row()]),
+                    force_new=True,
+                )
+                return
+            if data.startswith("ng:oapool:free:"):
+                if not owner:
+                    return
+                try:
+                    msg = await game.alliance_groups.set_status(pid, int(data.split(":")[-1]), "free")
+                    await out(msg, force_new=True)
+                except Exception as e:
+                    await out(f"❌ {e}", force_new=True)
+                return
+            if data.startswith("ng:oapool:bad:"):
+                if not owner:
+                    return
+                try:
+                    msg = await game.alliance_groups.set_status(pid, int(data.split(":")[-1]), "unusable")
+                    await out(msg, force_new=True)
+                except Exception as e:
+                    await out(f"❌ {e}", force_new=True)
+                return
+
             if data == "ng:oally":
                 allies = await game.alliances.list_active()
                 lines = [f"🌐 اتحادهای فعال: {len(allies)}"]
@@ -2476,6 +2580,15 @@ def register_handlers(bot, app_ctx: dict):
                 mem = await game.alliances.member_of(code)
                 if mem and data != "ng:ally:list":
                     a = await game.alliances.get(mem["alliance_id"])
+                    if a:
+                        try:
+                            gate = await game.alliance_groups.membership_gate(pid, a, bot=bot)
+                        except Exception:
+                            log.exception("ally gate cb")
+                            gate = None
+                        if gate:
+                            await out(gate, main_kb(owner), force_new=True)
+                            return
                     mems = await game.alliances.members(mem["alliance_id"])
                     labels = {m["country_code"]: await game.country_label(m["country_code"]) for m in mems}
                     text_a = game.alliances.card_text(a, mems, labels)

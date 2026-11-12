@@ -83,7 +83,13 @@ class AllianceService:
         )
 
     async def create(
-        self, pid: int, country: str, name: str, max_members: int, treasury_cap: float
+        self,
+        pid: int,
+        country: str,
+        name: str,
+        max_members: int,
+        treasury_cap: float,
+        bot=None,
     ) -> str:
         name = (name or "").strip()[:40]
         if len(name) < 3:
@@ -101,43 +107,122 @@ class AllianceService:
             raise AllianceError("کشور یافت نشد")
         if float(c["treasury"]) < cost:
             raise AllianceError(f"پول کافی نیست. نیاز: {cost:,}")
+
+        pool_svc = getattr(self.g, "alliance_groups", None)
+        if pool_svc is None:
+            raise AllianceError("سیستم گروه اتحاد آماده نیست.")
+        await pool_svc.ensure_schema()
+        bot = bot or getattr(self.g, "bot", None)
+
+        # Must have a free reserved group — no charge / no DB row without it
+        pool = await pool_svc.claim_free()
+        if not pool:
+            raise AllianceError(
+                "❌ در حال حاضر ظرفیت ساخت اتحاد تکمیل شده است."
+                + chr(10)
+                + "هیچ گروه آزادی برای ساخت اتحاد وجود ندارد."
+                + chr(10)
+                + "لطفاً بعداً دوباره تلاش کنید."
+            )
+
+        founder_label = c.get("name_fa") or country
+        try:
+            pr = await self.db.fetchrow(
+                "SELECT username, display_name FROM ng_players WHERE player_id=$1",
+                (int(pid),),
+            )
+            if pr:
+                founder_label = pr.get("display_name") or pr.get("username") or founder_label
+        except Exception:
+            pass
+
+        try:
+            invite = await pool_svc.setup_group(bot, pool, name, str(founder_label))
+        except Exception as e:
+            try:
+                await pool_svc.release(int(pool["id"]), free=True, err=str(e)[:200])
+            except Exception:
+                pass
+            raise AllianceError(str(e))
+
         now = datetime.now(timezone.utc).isoformat()
-        async with self.db.transaction() as tx:
-            if await tx.fetchrow(
-                "SELECT 1 AS x FROM ng_alliance_members WHERE country_code=$1", (country,)
-            ):
-                raise AllianceError("عضو اتحاد دیگر هستید")
-            await tx.execute(
-                "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
-                (float(c["treasury"]) - cost, country),
-            )
-            nid = await tx.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_alliances")
-            aid = int(nid["id"])
-            await tx.execute(
-                """
-                INSERT INTO ng_alliances
-                (id, name, founder_country, founder_player_id, max_members, treasury_cap, treasury, status, created_at)
-                VALUES ($1,$2,$3,$4,$5,$6,0,'active',$7)
-                """,
-                (aid, name, country, pid, max_members, treasury_cap, now),
-            )
-            await tx.execute(
-                """
-                INSERT INTO ng_alliance_members (alliance_id, country_code, player_id, role, joined_at)
-                VALUES ($1,$2,$3,'founder',$4)
-                """,
-                (aid, country, pid, now),
-            )
-            tid = await tx.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_alliance_tx")
-            await tx.execute(
-                """
-                INSERT INTO ng_alliance_tx (id, alliance_id, kind, amount, actor_player_id, country_code, note, created_at)
-                VALUES ($1,$2,'create',$3,$4,$5,$6,$7)
-                """,
-                (int(tid["id"]), aid, cost, pid, country, f"تأسیس {name}", now),
-            )
+        try:
+            async with self.db.transaction() as tx:
+                if await tx.fetchrow(
+                    "SELECT 1 AS x FROM ng_alliance_members WHERE country_code=$1", (country,)
+                ):
+                    raise AllianceError("عضو اتحاد دیگر هستید")
+                c2 = await tx.fetchrow(
+                    "SELECT treasury FROM ng_countries WHERE country_code=$1 AND owner_player_id=$2",
+                    (country, pid),
+                )
+                if not c2 or float(c2["treasury"]) < cost:
+                    raise AllianceError(f"پول کافی نیست. نیاز: {cost:,}")
+                await tx.execute(
+                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
+                    (float(c2["treasury"]) - cost, country),
+                )
+                nid = await tx.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_alliances")
+                aid = int(nid["id"])
+                await tx.execute(
+                    """
+                    INSERT INTO ng_alliances
+                    (id, name, founder_country, founder_player_id, max_members, treasury_cap, treasury, status, created_at,
+                     group_chat_id, group_invite_link, group_pool_id)
+                    VALUES ($1,$2,$3,$4,$5,$6,0,'active',$7,$8,$9,$10)
+                    """,
+                    (
+                        aid, name, country, pid, max_members, treasury_cap, now,
+                        str(pool["chat_id"]), invite, int(pool["id"]),
+                    ),
+                )
+                await tx.execute(
+                    """
+                    INSERT INTO ng_alliance_members (alliance_id, country_code, player_id, role, joined_at)
+                    VALUES ($1,$2,$3,'founder',$4)
+                    """,
+                    (aid, country, pid, now),
+                )
+                tid = await tx.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_alliance_tx")
+                await tx.execute(
+                    """
+                    INSERT INTO ng_alliance_tx (id, alliance_id, kind, amount, actor_player_id, country_code, note, created_at)
+                    VALUES ($1,$2,'create',$3,$4,$5,$6,$7)
+                    """,
+                    (int(tid["id"]), aid, cost, pid, country, f"تأسیس {name}", now),
+                )
+            await pool_svc.finalize(int(pool["id"]), aid, invite)
+        except Exception as e:
+            try:
+                await pool_svc.release(int(pool["id"]), free=True, err="db_fail")
+            except Exception:
+                pass
+            try:
+                if bot:
+                    await pool_svc._set_title(bot, pool["chat_id"], pool.get("reserve_name") or "گروه رزرو اتحاد")
+            except Exception:
+                pass
+            if isinstance(e, AllianceError):
+                raise
+            raise AllianceError("ثبت اتحاد ناموفق بود؛ هزینه کسر نشد.")
+
         await self.g.log_activity("alliance", f"تأسیس اتحاد {name}", country, pid)
-        return f"✅ اتحاد «{name}» ساخته شد.\nهزینه: {cost:,}\nظرفیت اعضا: {max_members}\nظرفیت خزانه: {int(treasury_cap):,}"
+        return (
+            f"✅ اتحاد «{name}» ساخته شد."
+            + chr(10)
+            + f"هزینه: {cost:,}"
+            + chr(10)
+            + f"ظرفیت اعضا: {max_members}"
+            + chr(10)
+            + f"ظرفیت خزانه: {int(treasury_cap):,}"
+            + chr(10)
+            + chr(10)
+            + "⚠️ عضویت در گروه رسمی اتحاد اجباری است."
+            + chr(10)
+            + "لینک دعوت گروه:"
+            + chr(10)
+            + str(invite)
+        )
 
     async def join(self, pid: int, country: str, aid: int) -> str:
         a = await self.get(aid)
@@ -503,6 +588,13 @@ class AllianceService:
             await tx.execute(
                 "DELETE FROM ng_alliance_members WHERE alliance_id=$1", (aid,)
             )
+        try:
+            pool = getattr(self.g, 'alliance_groups', None)
+            if pool is not None:
+                await pool.free_after_dissolve(a)
+        except Exception:
+            pass
+
         return f"✅ اتحاد «{a['name']}» منحل شد. موجودی خزانه به بنیان‌گذار برگشت."
 
     async def on_country_destroyed(self, country: str) -> None:
