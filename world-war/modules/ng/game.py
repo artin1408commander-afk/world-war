@@ -90,12 +90,20 @@ class Game:
                 """,
                 (now, json.dumps(self._default_logs()), self.group_id),
             )
+        else:
+            try:
+                gid = meta.get("main_group_id")
+                if gid is not None and str(gid).strip():
+                    self.group_id = str(gid).strip()
+            except Exception:
+                pass
         for stmt in (
             "ALTER TABLE ng_countries ADD COLUMN double_hp INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE ng_countries ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'country'",
             "ALTER TABLE ng_players ADD COLUMN cash REAL NOT NULL DEFAULT 0",
             "ALTER TABLE ng_players ADD COLUMN joined_day TEXT",
             "ALTER TABLE world_meta ADD COLUMN last_daily_date TEXT",
+            "ALTER TABLE world_meta ADD COLUMN main_group_id TEXT",
             """CREATE TABLE IF NOT EXISTS ng_defense_hits (
                 country_code TEXT PRIMARY KEY,
                 hits INTEGER NOT NULL DEFAULT 0,
@@ -4071,6 +4079,67 @@ class Game:
         await self.recalc_income(code)
         await self.admin_log(actor, "take_item", f"{code} {item} {qty}")
         return "✅ تجهیزات برداشت شد."
+
+
+    async def get_log_group(self) -> str:
+        """Current group chat for public logs (persisted)."""
+        try:
+            meta = await self.db.fetchrow("SELECT main_group_id FROM world_meta WHERE id=1")
+            if meta and meta.get("main_group_id") and str(meta.get("main_group_id")).strip():
+                return str(meta["main_group_id"]).strip()
+        except Exception:
+            log.exception("get_log_group")
+        return str(self.group_id or "").strip()
+
+    def format_log_group(self, ref: str | None = None) -> str:
+        g = (ref if ref is not None else (self.group_id or "")).strip()
+        if not g:
+            return "تنظیم نشده"
+        if g.startswith("@"):
+            return g
+        return "ID: " + g
+
+    async def set_log_group(self, actor: int, raw: str) -> str:
+        if not self.is_owner(actor):
+            raise GameError("فقط مالک مجاز می‌تواند گروه لاگ را تغییر دهد.")
+        ref = (raw or "").strip().replace(" ", "")
+        for ch in ("‎", "‏", "‌", "﻿"):
+            ref = ref.replace(ch, "")
+        low = ref.lower()
+        if "t.me/" in low or "ble.ir/" in low:
+            part = ref.rstrip("/").split("/")[-1]
+            if part.startswith("+"):
+                raise GameError("لینک دعوت خصوصی پشتیبانی نمی‌شود. @یوزرنیم یا آیدی عددی بفرستید.")
+            ref = part if part.startswith("@") else ("@" + part)
+        if not ref:
+            raise GameError("آیدی عددی یا @یوزرنیم گروه را بفرستید.")
+        if ref.lstrip("-").isdigit():
+            ref = str(int(ref))
+        elif ref.startswith("@"):
+            if len(ref) < 5:
+                raise GameError("یوزرنیم گروه کوتاه است.")
+            ref = "@" + ref.lstrip("@")
+        else:
+            if ref.replace("_", "").isalnum() and len(ref) >= 4:
+                ref = "@" + ref
+            else:
+                raise GameError("فرمت نامعتبر. مثال: @warworld3 یا -1001234567890")
+        await self.db.execute(
+            "UPDATE world_meta SET main_group_id=$1 WHERE id=1",
+            (ref,),
+        )
+        old = str(self.group_id or "")
+        self.group_id = ref
+        try:
+            await self.admin_log(actor, "set_log_group", f"{old} -> {ref}")
+        except Exception:
+            pass
+        return (
+            "✅ گروه لاگ تنظیم شد.\n\n"
+            f"گروه جدید: {self.format_log_group(ref)}\n\n"
+            "از این پس هیچ لاگی به گروه قبلی ارسال نمی‌شود و همهٔ لاگ‌های عمومی فقط در گروه جدید می‌روند.\n"
+            "⚠️ ربات باید در گروه جدید عضو و ادمین باشد."
+        )
 
     async def set_log_flag(self, actor: int, kind: str, enabled: bool) -> str:
         if not self.is_owner(actor):

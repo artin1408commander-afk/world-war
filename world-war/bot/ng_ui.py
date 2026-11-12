@@ -939,6 +939,21 @@ def register_handlers(bot, app_ctx: dict):
                         msg = f"❌ {e}"
                     await reply(message, msg, main_kb(owner))
                     return
+                if kind == "set_log_group":
+                    if not owner:
+                        _pending.pop(pid, None)
+                        await reply(message, "❌ فقط مالک")
+                        return
+                    try:
+                        msg = await game.set_log_group(pid, text)
+                        _pending.pop(pid, None)
+                        await reply(message, msg, main_kb(owner))
+                    except GameError as e:
+                        await reply(message, f"❌ {e}", ik([cancel_row()]))
+                    except Exception:
+                        log.exception("set_log_group")
+                        await reply(message, "❌ خطا در تنظیم گروه لاگ")
+                    return
                 if kind == "owner_hp_all":
                     try:
                         amount = game.parse_money_amount(text)
@@ -4137,12 +4152,38 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ {e}")
                 return
             if data == "ng:ologs":
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
                 flags = await game.get_log_flags()
+                cur = await game.get_log_group()
                 rows = []
+                rows.append([("📡 تنظیم گروه لاگ", "ng:osetlogg")])
                 for k, v in flags.items():
                     rows.append([(f"{'🟢' if v else '🔴'} {k}", f"ng:logtoggle:{k}")])
                 rows.append(back_row())
-                await out("تنظیم انواع لاگ (لمس = تغییر وضعیت):", ik(rows))
+                text = (
+                    "📜 تنظیم لاگ‌ها\n\n"
+                    f"گروه فعلی لاگ:\n{game.format_log_group(cur)}\n\n"
+                    "انواع لاگ (لمس = تغییر وضعیت):"
+                )
+                await out(text, ik(rows))
+                return
+            if data == "ng:osetlogg":
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
+                cur = await game.get_log_group()
+                _pending[pid] = {"kind": "set_log_group"}
+                await out(
+                    "📡 تنظیم گروه لاگ\n\n"
+                    f"گروه فعلی: {game.format_log_group(cur)}\n\n"
+                    "ربات باید در گروه جدید عضو و ادمین باشد.\n"
+                    "از این پس هیچ لاگی در گروه فعلی نمی‌رود و همهٔ لاگ‌ها فقط در گروه جدید ارسال می‌شوند.\n\n"
+                    "آیدی عددی یا @یوزرنیم گروه را بفرستید:",
+                    ik([cancel_row()]),
+                    force_new=True,
+                )
                 return
             if data.startswith("ng:logtoggle:"):
                 kind = data.split(":")[-1]
