@@ -135,28 +135,42 @@ async def group_log_loop(game: Game, bot):
                 except Exception:
                     pass
                 try:
-                    msg = None
-                    if hasattr(bot, "send_message"):
-                        msg = await bot.send_message(game.group_id or MAIN_GROUP, text[:3500])
-                    # Pin UN statements / nightly only
-                    if kind in ("group_pin_statement", "nightly_report", "group_pin") and msg is not None:
-                        mid = getattr(msg, "message_id", None) or getattr(msg, "id", None)
-                        if mid is not None:
-                            pinned = False
-                            for method, args in (
-                                ("pin_chat_message", (game.group_id or MAIN_GROUP, mid)),
-                                ("pin_message", (game.group_id or MAIN_GROUP, mid)),
-                                ("pin_chat_message", (game.group_id or MAIN_GROUP, mid, True)),
-                            ):
-                                if hasattr(bot, method):
-                                    try:
-                                        await getattr(bot, method)(*args)
-                                        pinned = True
-                                        break
-                                    except Exception:
-                                        log.exception("pin via %s failed", method)
-                            if not pinned:
-                                log.warning("could not pin message id=%s kind=%s", mid, kind)
+                    # Routing:
+                    # - normal logs → dedicated log group only
+                    # - statements → main group + log group
+                    if hasattr(game, "log_chat_targets"):
+                        targets = await game.log_chat_targets(kind)
+                    else:
+                        targets = [game.group_id or MAIN_GROUP]
+                    if not targets:
+                        targets = [game.group_id or MAIN_GROUP]
+                    for chat in targets:
+                        msg = None
+                        if hasattr(bot, "send_message"):
+                            try:
+                                msg = await bot.send_message(chat, text[:3500])
+                            except Exception:
+                                log.exception("group log send failed chat=%s kind=%s", chat, kind)
+                                continue
+                        # Pin UN statements / nightly only (on each successful target)
+                        if kind in ("group_pin_statement", "nightly_report", "group_pin") and msg is not None:
+                            mid = getattr(msg, "message_id", None) or getattr(msg, "id", None)
+                            if mid is not None:
+                                pinned = False
+                                for method, args in (
+                                    ("pin_chat_message", (chat, mid)),
+                                    ("pin_message", (chat, mid)),
+                                    ("pin_chat_message", (chat, mid, True)),
+                                ):
+                                    if hasattr(bot, method):
+                                        try:
+                                            await getattr(bot, method)(*args)
+                                            pinned = True
+                                            break
+                                        except Exception:
+                                            log.exception("pin via %s failed chat=%s", method, chat)
+                                if not pinned:
+                                    log.warning("could not pin message id=%s kind=%s chat=%s", mid, kind, chat)
                 except Exception:
                     log.exception("group log send failed")
                     # do NOT re-queue failures as new activity (avoids spam loops)

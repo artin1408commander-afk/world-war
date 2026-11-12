@@ -65,7 +65,8 @@ class Game:
         self.db = db
         self.owner_id = owner_id
         self._extra_owner_ids: set[int] = set()
-        self.group_id = group_id
+        self.group_id = group_id  # main/public group (statements always here)
+        self.log_group_id = None  # dedicated log group (all logs; statements also)
         self._cat = {c["item_code"]: c for c in CATALOG}
         self.alliances = AllianceService(self)
         self.alliance_groups = AllianceGroupPool(self)
@@ -92,9 +93,10 @@ class Game:
             )
         else:
             try:
-                gid = meta.get("main_group_id")
-                if gid is not None and str(gid).strip():
-                    self.group_id = str(gid).strip()
+                # main_group_id historically used for log target; prefer log_group_id
+                lg = meta.get("log_group_id") or meta.get("main_group_id")
+                if lg is not None and str(lg).strip():
+                    self.log_group_id = str(lg).strip()
             except Exception:
                 pass
         for stmt in (
@@ -104,6 +106,7 @@ class Game:
             "ALTER TABLE ng_players ADD COLUMN joined_day TEXT",
             "ALTER TABLE world_meta ADD COLUMN last_daily_date TEXT",
             "ALTER TABLE world_meta ADD COLUMN main_group_id TEXT",
+            "ALTER TABLE world_meta ADD COLUMN log_group_id TEXT",
             """CREATE TABLE IF NOT EXISTS ng_defense_hits (
                 country_code TEXT PRIMARY KEY,
                 hits INTEGER NOT NULL DEFAULT 0,
@@ -4081,29 +4084,76 @@ class Game:
         return "✅ تجهیزات برداشت شد."
 
 
-    async def get_log_group(self) -> str:
-        """Current group chat for public logs (persisted)."""
-        try:
-            meta = await self.db.fetchrow("SELECT main_group_id FROM world_meta WHERE id=1")
-            if meta and meta.get("main_group_id") and str(meta.get("main_group_id")).strip():
-                return str(meta["main_group_id"]).strip()
-        except Exception:
-            log.exception("get_log_group")
+    async def get_main_group(self) -> str:
+        """Primary game group (config MAIN_GROUP). Statements always post here."""
         return str(self.group_id or "").strip()
 
+    async def get_log_group(self) -> str:
+        """Dedicated log group. Empty means logs fall back to main group."""
+        if self.log_group_id and str(self.log_group_id).strip():
+            return str(self.log_group_id).strip()
+        try:
+            meta = await self.db.fetchrow(
+                "SELECT log_group_id, main_group_id FROM world_meta WHERE id=1"
+            )
+            if meta:
+                lg = meta.get("log_group_id") or meta.get("main_group_id")
+                if lg is not None and str(lg).strip():
+                    self.log_group_id = str(lg).strip()
+                    return self.log_group_id
+        except Exception:
+            log.exception("get_log_group")
+        return ""
+
     def format_log_group(self, ref: str | None = None) -> str:
-        g = (ref if ref is not None else (self.group_id or "")).strip()
-        if not g:
-            return "تنظیم نشده"
-        if g.startswith("@"):
-            return g
-        return "ID: " + g
+        gref = (ref if ref is not None else (self.log_group_id or "")).strip()
+        if not gref:
+            return "تنظیم نشده (فقط گروه اصلی)"
+        if gref.startswith("@"):
+            return gref
+        return "ID: " + gref
+
+    def is_statement_log_kind(self, kind: str | None) -> bool:
+        k = str(kind or "").lower()
+        if not k:
+            return False
+        if k in ("group_pin_statement", "group_statement", "statement", "group_pin"):
+            return True
+        if "statement" in k:
+            return True
+        return False
+
+    async def log_chat_targets(self, kind: str | None = None) -> list[str]:
+        """Where a queued group log should be delivered.
+
+        - Normal logs → only the dedicated log group (fallback: main).
+        - Statements → BOTH main group and log group (deduped).
+        """
+        main = (await self.get_main_group()).strip()
+        logg = (await self.get_log_group()).strip()
+        out: list[str] = []
+
+        def add(x: str) -> None:
+            x = (x or "").strip()
+            if x and x not in out:
+                out.append(x)
+
+        if self.is_statement_log_kind(kind):
+            add(main)
+            add(logg)
+            return out
+        # non-statement: preferred log group only
+        if logg:
+            add(logg)
+        elif main:
+            add(main)
+        return out
 
     async def set_log_group(self, actor: int, raw: str) -> str:
         if not self.is_owner(actor):
             raise GameError("فقط مالک مجاز می‌تواند گروه لاگ را تغییر دهد.")
         ref = (raw or "").strip().replace(" ", "")
-        for ch in ("‎", "‏", "‌", "﻿"):
+        for ch in ("\u200e", "\u200f", "\u200c", "\ufeff"):
             ref = ref.replace(ch, "")
         low = ref.lower()
         if "t.me/" in low or "ble.ir/" in low:
@@ -4124,21 +4174,31 @@ class Game:
                 ref = "@" + ref
             else:
                 raise GameError("فرمت نامعتبر. مثال: @warworld3 یا -1001234567890")
-        await self.db.execute(
-            "UPDATE world_meta SET main_group_id=$1 WHERE id=1",
-            (ref,),
-        )
-        old = str(self.group_id or "")
-        self.group_id = ref
+        try:
+            await self.db.execute(
+                "UPDATE world_meta SET log_group_id=$1 WHERE id=1",
+                (ref,),
+            )
+        except Exception:
+            # fallback older schema: store in main_group_id without touching runtime main group
+            await self.db.execute(
+                "UPDATE world_meta SET main_group_id=$1 WHERE id=1",
+                (ref,),
+            )
+        old = str(self.log_group_id or "")
+        self.log_group_id = ref
         try:
             await self.admin_log(actor, "set_log_group", f"{old} -> {ref}")
         except Exception:
             pass
+        main = await self.get_main_group()
         return (
             "✅ گروه لاگ تنظیم شد.\n\n"
-            f"گروه جدید: {self.format_log_group(ref)}\n\n"
-            "از این پس هیچ لاگی به گروه قبلی ارسال نمی‌شود و همهٔ لاگ‌های عمومی فقط در گروه جدید می‌روند.\n"
-            "⚠️ ربات باید در گروه جدید عضو و ادمین باشد."
+            f"گروه لاگ (همه لاگ‌ها): {self.format_log_group(ref)}\n"
+            f"گروه اصلی (بیانیه‌ها هم اینجا می‌روند): {main or '—'}\n\n"
+            "📌 لاگ‌های عادی فقط به گروه لاگ می‌روند.\n"
+            "📢 بیانیه‌ها همزمان در گروه اصلی و گروه لاگ ارسال می‌شوند.\n"
+            "⚠️ ربات باید در هر دو گروه عضو و ادمین باشد."
         )
 
     async def set_log_flag(self, actor: int, kind: str, enabled: bool) -> str:

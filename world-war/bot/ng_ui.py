@@ -4162,9 +4162,13 @@ def register_handlers(bot, app_ctx: dict):
                 for k, v in flags.items():
                     rows.append([(f"{'🟢' if v else '🔴'} {k}", f"ng:logtoggle:{k}")])
                 rows.append(back_row())
+                main_g = await game.get_main_group()
                 text = (
                     "📜 تنظیم لاگ‌ها\n\n"
-                    f"گروه فعلی لاگ:\n{game.format_log_group(cur)}\n\n"
+                    f"گروه لاگ (همه لاگ‌ها):\n{game.format_log_group(cur)}\n\n"
+                    f"گروه اصلی (بیانیه‌ها هم اینجا):\n{main_g or '—'}\n\n"
+                    "📢 بیانیه‌ها در هر دو گروه ارسال می‌شوند.\n"
+                    "📝 بقیه لاگ‌ها فقط در گروه لاگ می‌روند.\n\n"
                     "انواع لاگ (لمس = تغییر وضعیت):"
                 )
                 await out(text, ik(rows))
@@ -4174,13 +4178,16 @@ def register_handlers(bot, app_ctx: dict):
                     await out("❌ فقط مالک")
                     return
                 cur = await game.get_log_group()
+                main_g = await game.get_main_group()
                 _pending[pid] = {"kind": "set_log_group"}
                 await out(
                     "📡 تنظیم گروه لاگ\n\n"
-                    f"گروه فعلی: {game.format_log_group(cur)}\n\n"
-                    "ربات باید در گروه جدید عضو و ادمین باشد.\n"
-                    "از این پس هیچ لاگی در گروه فعلی نمی‌رود و همهٔ لاگ‌ها فقط در گروه جدید ارسال می‌شوند.\n\n"
-                    "آیدی عددی یا @یوزرنیم گروه را بفرستید:",
+                    f"گروه لاگ فعلی: {game.format_log_group(cur)}\n"
+                    f"گروه اصلی: {main_g or '—'}\n\n"
+                    "ربات باید در گروه لاگ عضو و ادمین باشد.\n"
+                    "لاگ‌های عادی فقط به گروه لاگ می‌روند.\n"
+                    "بیانیه‌ها همزمان در گروه اصلی و گروه لاگ ارسال می‌شوند.\n\n"
+                    "آیدی عددی یا @یوزرنیم گروه لاگ را بفرستید:",
                     ik([cancel_row()]),
                     force_new=True,
                 )
