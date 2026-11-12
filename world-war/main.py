@@ -264,54 +264,67 @@ async def async_main() -> None:
         asyncio.create_task(group_log_loop(game, bot))
         asyncio.create_task(owner_inbox_loop(game, bot, settings.owner_id))
         asyncio.create_task(dm_notice_loop(game, bot))
-        log.info("Starting Bale bot (python-bale-bot polling)")
-        # Compatible with python-bale-bot 2.4 and 2.5:
-        # - some versions lack Updater.setup()
-        # - start_polling() only launches a worker task; process must stay alive
-        # - Bot must also run the update fetcher queue consumer
+        log.info("Starting Bale bot (python-bale-bot)")
+        # python-bale-bot on Railway is the 2.5.0-style package:
+        #   Bot.connect() -> get_me() + updater.start() (long-poll forever)
+        # Newer experimental APIs use setup()/start_polling(); support both.
         async with bot:
-            try:
+            if hasattr(bot, "connect") and callable(getattr(bot, "connect")):
+                log.info("Using bot.connect() (python-bale-bot classic)")
+                await bot.connect()
+            else:
                 me = await bot.get_me()
                 uname = getattr(me, "username", None) or getattr(me, "first_name", None)
                 uid = getattr(me, "id", None) or getattr(me, "user_id", None)
                 log.info("Bale identity ok user=%s id=%s", uname, uid)
-            except Exception:
-                log.exception("bot.get_me failed — check BALE_TOKEN")
-                raise
-
-            updater = getattr(bot, "updater", None)
-            if updater is None:
-                raise RuntimeError("Bot.updater missing — incompatible python-bale-bot version")
-
-            if hasattr(updater, "setup"):
-                await updater.setup()
-            else:
-                # Older Updater: inject stop event used by internal worker loop
-                import asyncio as _asyncio
-                stop_ev = _asyncio.Event()
-                for attr in (
-                    f"_{type(updater).__name__}__stop_worker_event",
-                    "_Updater__stop_worker_event",
-                    "__stop_worker_event",
-                ):
-                    try:
-                        setattr(updater, attr, stop_ev)
-                    except Exception:
-                        pass
-                log.info("Updater.setup missing — using legacy stop-event init")
-
-            # Queue consumer (dispatches on_message / on_callback)
-            fetcher = getattr(bot, "_updater_fetcher_wrapper", None) or getattr(bot, "_Bot__updater_fetcher_wrapper", None)
-            if callable(fetcher):
-                asyncio.create_task(fetcher())
-                log.info("Update fetcher task started")
-            else:
-                log.warning("No update fetcher wrapper found on Bot — events may not dispatch")
-
-            log.info("Updater polling started — waiting for messages")
-            await updater.start_polling()
-            # start_polling returns after spawning worker; keep process alive
-            await asyncio.Event().wait()
+                updater = getattr(bot, "updater", None)
+                if updater is None:
+                    raise RuntimeError("Bot.updater missing")
+                if hasattr(updater, "start") and callable(updater.start):
+                    log.info("Using updater.start()")
+                    await updater.start()
+                elif hasattr(updater, "start_polling") and callable(updater.start_polling):
+                    if hasattr(updater, "setup"):
+                        await updater.setup()
+                    fetcher = getattr(bot, "_updater_fetcher_wrapper", None)
+                    if callable(fetcher):
+                        asyncio.create_task(fetcher())
+                    log.info("Using updater.start_polling()")
+                    await updater.start_polling()
+                    await asyncio.Event().wait()
+                else:
+                    # Last resort: manual long-poll + event dispatch
+                    log.info("Using manual get_updates loop")
+                    offset = None
+                    bot.dispatch("ready") if hasattr(bot, "dispatch") else None
+                    while True:
+                        try:
+                            updates = await bot.get_updates(offset=offset)
+                        except Exception:
+                            log.exception("get_updates failed")
+                            await asyncio.sleep(2)
+                            continue
+                        if not updates:
+                            await asyncio.sleep(0.3)
+                            continue
+                        for upd in updates:
+                            try:
+                                uid = getattr(upd, "update_id", None)
+                                if uid is not None:
+                                    offset = int(uid) + 1
+                                if hasattr(bot, "process_update"):
+                                    await bot.process_update(upd)
+                                else:
+                                    msg = getattr(upd, "message", None)
+                                    cb = getattr(upd, "callback_query", None)
+                                    if msg is not None and hasattr(bot, "dispatch"):
+                                        bot.dispatch("message", msg)
+                                        bot.dispatch("on_message", msg)
+                                    if cb is not None and hasattr(bot, "dispatch"):
+                                        bot.dispatch("callback", cb)
+                                        bot.dispatch("on_callback", cb)
+                            except Exception:
+                                log.exception("process update failed")
     finally:
         await db.close()
 
