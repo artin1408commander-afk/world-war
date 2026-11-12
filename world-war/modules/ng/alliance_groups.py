@@ -68,37 +68,257 @@ class AllianceGroupPool:
             "rows": rows,
         }
 
-    async def register(self, actor: int, chat_id: str, reserve_name: str = "گروه رزرو اتحاد") -> str:
-        if not self.g.is_owner(int(actor)):
-            raise AllianceGroupError("فقط مالک")
+    @staticmethod
+    def is_reserve_title(title: str | None) -> bool:
+        """Groups named 'c.' (or c / C.) are reserved alliance pool groups."""
+        t = (title or "").strip()
+        if not t:
+            return False
+        low = t.lower().replace(" ", "")
+        return low in ("c.", "c", "c٫", "с.") or low.startswith("c.")
+
+    async def resolve_chat_ref(self, bot, ref: str) -> tuple[str, str | None, str | None]:
+        """Resolve @username or numeric id → (chat_id, title, username)."""
+        raw = (ref or "").strip()
+        if not raw:
+            raise AllianceGroupError("شناسه یا @یوزرنیم گروه خالی است")
+        # optional "ref|name"
+        if "|" in raw:
+            raw = raw.split("|", 1)[0].strip()
+        username = None
+        if raw.startswith("@"):
+            username = raw[1:].strip()
+            lookup = raw
+        elif raw.lstrip("-").isdigit():
+            lookup = int(raw)
+        else:
+            # treat as username without @
+            username = raw
+            lookup = "@" + raw if not raw.startswith("@") else raw
+
+        chat = None
+        last = None
+        if bot is not None:
+            for name in ("get_chat", "getChat"):
+                fn = getattr(bot, name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    r = fn(lookup)
+                    if hasattr(r, "__await__"):
+                        r = await r
+                    chat = r
+                    break
+                except Exception as e:
+                    last = e
+                    # retry without @
+                    if username:
+                        try:
+                            r = fn(username)
+                            if hasattr(r, "__await__"):
+                                r = await r
+                            chat = r
+                            break
+                        except Exception as e2:
+                            last = e2
+        if chat is None:
+            # numeric fallback without API
+            if str(raw).lstrip("-").isdigit():
+                return str(raw), None, username
+            raise AllianceGroupError(
+                "گروه با این @ پیدا نشد. مطمئن شوید ربات عضو گروه است و @ عمومی دارد."
+                + (f" ({last})" if last else "")
+            )
+
+        cid = (
+            getattr(chat, "id", None)
+            or getattr(chat, "chat_id", None)
+            or getattr(chat, "peer_id", None)
+        )
+        if cid is None:
+            raise AllianceGroupError("شناسه گروه از API دریافت نشد")
+        title = (
+            getattr(chat, "title", None)
+            or getattr(chat, "name", None)
+            or getattr(chat, "first_name", None)
+        )
+        un = getattr(chat, "username", None) or username
+        return str(cid), (str(title) if title else None), (str(un) if un else None)
+
+    async def _insert_pool(
+        self,
+        chat_id: str,
+        reserve_name: str,
+        *,
+        username: str | None = None,
+    ) -> str:
         await self.ensure_schema()
+        # store username in last_error field? better add column username optional
+        try:
+            await self.db.execute(
+                "ALTER TABLE ng_alliance_pool_groups ADD COLUMN username TEXT"
+            )
+        except Exception:
+            pass
         chat_id = str(chat_id).strip()
-        if not chat_id:
-            raise AllianceGroupError("شناسه گروه نامعتبر")
         reserve_name = (reserve_name or "گروه رزرو اتحاد").strip()[:80] or "گروه رزرو اتحاد"
-        if await self.db.fetchrow(
-            "SELECT id FROM ng_alliance_pool_groups WHERE chat_id=$1", (chat_id,)
-        ):
-            raise AllianceGroupError("این گروه قبلاً ثبت شده")
+        exists = await self.db.fetchrow(
+            "SELECT id, status FROM ng_alliance_pool_groups WHERE chat_id=$1", (chat_id,)
+        )
+        if exists:
+            if exists.get("status") == "free":
+                return (
+                    "ℹ️ این گروه از قبل در مخزن رزرو (آزاد) ثبت شده."
+                    + chr(10)
+                    + f"شناسه: {chat_id}"
+                )
+            return (
+                f"ℹ️ این گروه قبلاً ثبت شده (وضعیت: {exists.get('status')})."
+                + chr(10)
+                + f"شناسه: {chat_id}"
+            )
         nid = await self.db.fetchrow(
             "SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_alliance_pool_groups"
         )
         now = datetime.now(timezone.utc).isoformat()
-        await self.db.execute(
-            """
-            INSERT INTO ng_alliance_pool_groups
-            (id, chat_id, reserve_name, status, created_at)
-            VALUES ($1,$2,$3,'free',$4)
-            """,
-            (int(nid["id"]), chat_id, reserve_name, now),
-        )
+        try:
+            await self.db.execute(
+                """
+                INSERT INTO ng_alliance_pool_groups
+                (id, chat_id, reserve_name, status, created_at, username)
+                VALUES ($1,$2,$3,'free',$4,$5)
+                """,
+                (int(nid["id"]), chat_id, reserve_name, now, username),
+            )
+        except Exception:
+            await self.db.execute(
+                """
+                INSERT INTO ng_alliance_pool_groups
+                (id, chat_id, reserve_name, status, created_at)
+                VALUES ($1,$2,$3,'free',$4)
+                """,
+                (int(nid["id"]), chat_id, reserve_name, now),
+            )
         return (
             "✅ گروه رزرو ثبت شد."
             + chr(10)
             + f"شناسه: {chat_id}"
+            + (chr(10) + f"@: @{username}" if username else "")
             + chr(10)
             + f"نام رزرو: {reserve_name}"
         )
+
+    async def register(
+        self,
+        actor: int,
+        chat_ref: str,
+        reserve_name: str = "گروه رزرو اتحاد",
+        bot=None,
+    ) -> str:
+        if not self.g.is_owner(int(actor)):
+            raise AllianceGroupError("فقط مالک")
+        bot = self.bot(bot)
+        ref = (chat_ref or "").strip()
+        extra_name = None
+        if "|" in ref:
+            ref, extra_name = [x.strip() for x in ref.split("|", 1)]
+        chat_id, title, username = await self.resolve_chat_ref(bot, ref)
+        name = (extra_name or reserve_name or "").strip()
+        if not name or name == "گروه رزرو اتحاد":
+            if title and not self.is_reserve_title(title):
+                name = title
+            else:
+                name = "گروه رزرو اتحاد"
+        # best-effort admin check
+        if bot is not None:
+            try:
+                ok = await self._bot_is_admin(bot, chat_id)
+                if ok is False:
+                    raise AllianceGroupError("ربات در این گروه ادمین نیست.")
+            except AllianceGroupError:
+                raise
+            except Exception:
+                pass
+        return await self._insert_pool(chat_id, name, username=username)
+
+    async def _bot_is_admin(self, bot, chat_id) -> bool | None:
+        cid = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+        me = None
+        for name in ("get_me", "getMe"):
+            fn = getattr(bot, name, None)
+            if not callable(fn):
+                continue
+            try:
+                r = fn()
+                if hasattr(r, "__await__"):
+                    r = await r
+                me = r
+                break
+            except Exception:
+                continue
+        if me is None:
+            return None
+        bot_id = getattr(me, "id", None) or getattr(me, "user_id", None)
+        if bot_id is None:
+            return None
+        try:
+            m = await bot.get_chat_member(cid, int(bot_id))
+            st = str(getattr(m, "status", "") or "").lower()
+            if st in ("administrator", "creator", "owner"):
+                return True
+            if getattr(m, "is_chat_admin", None) is True:
+                return True
+            return False
+        except Exception:
+            return None
+
+    async def try_auto_register_from_chat(self, bot, chat) -> str | None:
+        """If group title is c. and bot is admin, auto-add to free pool."""
+        if chat is None:
+            return None
+        ctype = str(
+            getattr(chat, "type", None)
+            or getattr(chat, "chat_type", None)
+            or ""
+        ).lower()
+        # skip private
+        if ctype in ("private", "pv", "user"):
+            return None
+        title = getattr(chat, "title", None) or getattr(chat, "name", None)
+        if not self.is_reserve_title(title):
+            return None
+        cid = getattr(chat, "id", None) or getattr(chat, "chat_id", None)
+        if cid is None:
+            return None
+        un = getattr(chat, "username", None)
+        bot = self.bot(bot)
+        if bot is not None:
+            adm = await self._bot_is_admin(bot, cid)
+            if adm is False:
+                return None
+        try:
+            msg = await self._insert_pool(str(cid), "گروه رزرو اتحاد", username=un)
+            if msg.startswith("✅"):
+                log.info("auto-registered reserve group chat_id=%s title=%s", cid, title)
+            return msg
+        except Exception:
+            log.exception("auto register pool")
+            return None
+
+    async def try_auto_from_message(self, bot, message) -> str | None:
+        chat = getattr(message, "chat", None)
+        if chat is None:
+            # some libs: message.get_chat()
+            fn = getattr(message, "get_chat", None)
+            if callable(fn):
+                try:
+                    r = fn()
+                    if hasattr(r, "__await__"):
+                        r = await r
+                    chat = r
+                except Exception:
+                    chat = None
+        return await self.try_auto_register_from_chat(bot, chat)
 
     async def set_status(self, actor: int, pool_id: int, status: str) -> str:
         if not self.g.is_owner(int(actor)):

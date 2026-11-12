@@ -480,6 +480,11 @@ def register_handlers(bot, app_ctx: dict):
     @bot.listen("on_message")
     async def on_message(message):
         try:
+            # Auto-detect reserved alliance groups named "c." when bot is admin
+            try:
+                await game.alliance_groups.try_auto_from_message(bot, message)
+            except Exception:
+                log.exception("auto pool register")
             text = _text(message)
             if not text:
                 return
@@ -951,7 +956,9 @@ def register_handlers(bot, app_ctx: dict):
                     else:
                         cid, rname = raw, "گروه رزرو اتحاد"
                     try:
-                        msg = await game.alliance_groups.register(pid, cid.strip(), rname.strip())
+                        msg = await game.alliance_groups.register(
+                            pid, cid.strip(), rname.strip(), bot=bot
+                        )
                         _pending.pop(pid, None)
                         await reply(message, msg, main_kb(owner))
                     except Exception as e:
@@ -2273,11 +2280,15 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 _pending[pid] = {"kind": "oapool_add"}
                 await out(
-                    "شناسه عددی گروه رزرو را بفرستید."
+                    "یوزرنیم گروه را با @ بفرستید (پیشنهادی)."
                     + chr(10)
-                    + "ربات باید در آن گروه ادمین باشد."
+                    + "مثال: @my_alliance_pool"
                     + chr(10)
-                    + "اختیاری: chat_id|نام رزرو",
+                    + "یا شناسه عددی گروه"
+                    + chr(10)
+                    + "اختیاری: @user|نام رزرو"
+                    + chr(10) + chr(10)
+                    + "خودکار: اگر نام گروه دقیقاً c. باشد و ربات ادمین باشد، خودش به مخزن اضافه می‌شود.",
                     ik([cancel_row()]),
                     force_new=True,
                 )
