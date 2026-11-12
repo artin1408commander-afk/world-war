@@ -3093,6 +3093,40 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             # owner legendary mgmt
+
+            if data == "ng:oleglock" or data.startswith("ng:oleglock:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    if data.startswith("ng:oleglock:") and data.split(":")[-1] in ("0", "1"):
+                        en = data.endswith(":1")
+                        msg = await game.legendary.set_locked(pid, en)
+                    else:
+                        on = await game.legendary.is_locked()
+                        msg = (
+                            "🔒 محدودیت لجندری: روشن" if on else "✅ محدودیت لجندری: خاموش"
+                        )
+                        msg += chr(10) + (
+                            "خرید و استفاده و همه اثرها غیرفعال‌اند."
+                            if on else
+                            "خرید و استفاده آزاد است."
+                        )
+                    on = await game.legendary.is_locked()
+                    await out(
+                        msg + chr(10) + chr(10) + ("وضعیت: 🔒 روشن" if on else "وضعیت: ✅ خاموش"),
+                        ik([
+                            [("🔒 روشن کردن محدودیت", "ng:oleglock:1")],
+                            [("🔓 خاموش کردن محدودیت", "ng:oleglock:0")],
+                            [("🔄 بررسی وضعیت", "ng:oleglock")],
+                            [("⬅️ پنل مالک", "ng:opanel")],
+                        ]),
+                        force_new=True,
+                    )
+                except Exception as e:
+                    log.exception("oleglock")
+                    await out(f"❌ {e}", force_new=True)
+                return
             if data == "ng:oleg" or data.startswith("ng:oleg:"):
                 page = 0
                 if data.startswith("ng:oleg:"):
@@ -4980,6 +5014,9 @@ def register_handlers(bot, app_ctx: dict):
                     [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
                     [("🎁 مدیریت لجندری", "ng:oleg"), ("💰 شارژ کیف پول", "ng:owallet")],
                     [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
+                    [("🔒 محدودیت لجندری روشن", "ng:oleglock:1")],
+                    [("🔓 محدودیت لجندری خاموش", "ng:oleglock:0")],
+                    [("🔒 وضعیت محدودیت لجندری", "ng:oleglock")],
                     [("⬅️ بستن", "ng:home")],
                 ]
                 await out("🛡 پنل مالک / سازمان ملل", ik(rows))

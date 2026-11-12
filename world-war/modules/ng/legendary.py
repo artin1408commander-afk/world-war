@@ -261,6 +261,97 @@ class LegendaryService:
             log.exception("expire_all_active_effects")
         return n
 
+    LOCK_MSG = "🔒 سیستم آیتم‌های لجندری توسط مالک قفل شده است. متأسفانه فعلاً امکان خرید/استفاده وجود ندارد."
+
+    async def is_locked(self) -> bool:
+        try:
+            row = await self.db.fetchrow(
+                "SELECT value FROM ng_bot_settings WHERE key=$1", ("legendary_locked",)
+            )
+            if row and str(row.get("value") or "0").strip().lower() in ("1", "true", "on", "yes"):
+                return True
+        except Exception:
+            log.exception("is_locked settings")
+        try:
+            await self.db.execute(
+                "ALTER TABLE world_meta ADD COLUMN legendary_locked INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+        try:
+            meta = await self.db.fetchrow("SELECT legendary_locked FROM world_meta WHERE id=1")
+            if meta is not None and int(meta.get("legendary_locked") or 0) == 1:
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def assert_not_locked(self) -> None:
+        if await self.is_locked():
+            raise LegendaryError(self.LOCK_MSG)
+
+    async def set_locked(self, actor: int, enabled: bool) -> str:
+        if not self.g.is_owner(int(actor)):
+            raise LegendaryError("فقط مالک")
+        enabled = bool(enabled)
+        flag = 1 if enabled else 0
+        try:
+            await self.db.execute(
+                "ALTER TABLE world_meta ADD COLUMN legendary_locked INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+        try:
+            await self.db.execute(
+                "UPDATE world_meta SET legendary_locked=$1 WHERE id=1",
+                (flag,),
+            )
+        except Exception:
+            log.exception("set legendary_locked world_meta")
+        try:
+            await self.g.ensure_bot_settings_table()
+            await self.g._write_setting_raw("legendary_locked", "1" if enabled else "0")
+        except Exception:
+            log.exception("set legendary_locked settings")
+        cleared = 0
+        if enabled:
+            try:
+                cleared = await self.expire_all_active_effects("owner_lock")
+            except Exception:
+                log.exception("expire on lock")
+            try:
+                await self.g.admin_log(int(actor), "legendary_lock", "on")
+            except Exception:
+                pass
+            try:
+                await self.g.log_activity(
+                    "admin",
+                    "🔒 محدودیت آیتم لجندری توسط مالک روشن شد — همه اثرها قطع شد",
+                    None,
+                    int(actor),
+                )
+            except Exception:
+                pass
+            return (
+                "🔒 محدودیت آیتم لجندری روشن شد."
+                + chr(10)
+                + f"اثرهای فعال قطع‌شده: {cleared}"
+                + chr(10)
+                + "از این لحظه هیچ‌کس نمی‌تواند لجندری بخرد یا استفاده کند."
+                + chr(10)
+                + "مصونیت/فلج/ممنوعیت اتم و بقیه اثرها دیگر اعمال نمی‌شوند."
+            )
+        try:
+            await self.g.admin_log(int(actor), "legendary_lock", "off")
+        except Exception:
+            pass
+        return (
+            "✅ محدودیت آیتم لجندری خاموش شد."
+            + chr(10)
+            + "خرید و استفاده دوباره آزاد است."
+        )
+
+
     # ---- wallet ----
     async def get_wallet(self, pid: int) -> float:
         row = await self.db.fetchrow(
@@ -450,6 +541,7 @@ class LegendaryService:
 
     async def buy(self, pid: int, item_code: str) -> str:
         pid = int(pid)
+        await self.assert_not_locked()
         try:
             await self.g.assert_can_shop(pid)
         except Exception as e:
@@ -610,6 +702,8 @@ class LegendaryService:
         return out
 
     async def has_effect(self, country: str, effect_type: str) -> bool:
+        if await self.is_locked():
+            return False
         for e in await self.active_effects(country):
             if e["effect_type"] == effect_type:
                 return True
@@ -628,10 +722,14 @@ class LegendaryService:
             raise LegendaryError("استفاده از بمب اتم برای این کشور موقتاً ممنوع است.")
 
     async def is_immune(self, country: str) -> bool:
+        if await self.is_locked():
+            return False
         return await self.has_effect(country, "attack_immunity")
 
     async def income_multiplier(self, country: str) -> float:
         """One-shot modifiers; marks applied when consumed."""
+        if await self.is_locked():
+            return 1.0
         mult = 1.0
         rows = await self.db.fetch(
             """
@@ -660,6 +758,7 @@ class LegendaryService:
     async def use_item(
         self, pid: int, item_code: str, target_country: Optional[str]
     ) -> str:
+        await self.assert_not_locked()
         d = await self.get_def(item_code)
         if not d or not int(d.get("active") or 0):
             raise LegendaryError("آیتم نامعتبر یا غیرفعال است.")
