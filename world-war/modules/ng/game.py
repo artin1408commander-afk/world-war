@@ -2871,24 +2871,57 @@ class Game:
         atk_name = await self.country_label(attacker)
         def_name = await self.country_label(defender)
         clog = getattr(self, "_last_combat_log", {}) or {}
-        cons_lines = clog.get("consumption") or []
-        sp_lines = clog.get("specialists") or []
+        cons_lines = list(clog.get("consumption") or [])
+        sp_lines = list(clog.get("specialists") or [])
         kind_fa = {"ground": "زمینی", "air": "هوایی", "sea": "دریایی"}.get(
             str(clog.get("kind") or kind), str(clog.get("kind") or kind)
         )
         pct = int(float(clog.get("percent") or percent or 0))
-        raw_d = float(clog.get("raw_damage") or (damage + intercepted))
-        inter = float(clog.get("intercepted") or intercepted)
-        final_d = float(clog.get("final_damage") or damage)
-        cover_p = float(clog.get("cover") or cover) * 100.0
-        systems = clog.get("systems") or []
+        try:
+            raw_d = float(clog.get("raw_damage") if clog.get("raw_damage") is not None else (float(damage) + float(intercepted)))
+        except Exception:
+            raw_d = float(damage or 0)
+        try:
+            inter = float(clog.get("intercepted") if clog.get("intercepted") is not None else intercepted)
+        except Exception:
+            inter = 0.0
+        try:
+            final_d = float(clog.get("final_damage") if clog.get("final_damage") is not None else damage)
+        except Exception:
+            final_d = float(damage or 0)
+        try:
+            cover_p = float(clog.get("cover") if clog.get("cover") is not None else cover) * 100.0
+        except Exception:
+            cover_p = 0.0
+        systems = list(clog.get("systems") or [])
+        # sort by qty desc, keep short list so log is not truncated by chat limits
+        try:
+            systems = sorted(systems, key=lambda s: -float(s.get("qty") or 0))
+        except Exception:
+            pass
         sys_lines = []
-        for s in systems[:8]:
-            sys_lines.append(f"• {s.get('name')}: {int(s.get('qty') or 0)} واحد (قدرت {int(s.get('defense') or 0)})")
+        for s in systems[:6]:
+            nm = s.get("name") or s.get("code") or "پدافند"
+            sys_lines.append(
+                f"• {nm}: {int(float(s.get('qty') or 0))} واحد (قدرت {int(float(s.get('defense') or 0))})"
+            )
         if not sys_lines:
             sys_lines = ["• پدافندی در انبار مدافع نیست"]
+        try:
+            max_hp_show = int(float((d or {}).get("max_hp") or 1000))
+        except Exception:
+            max_hp_show = 1000
+        try:
+            hp_show = int(max(0, float(new_hp)))
+        except Exception:
+            hp_show = 0
+        try:
+            loot_show = int(float(loot or 0))
+        except Exception:
+            loot_show = 0
 
-        report_lines = [
+        # New standard log format (always include HP + loot + consumption footer)
+        head = [
             "⚔️ گزارش درگیری",
             "",
             f"مهاجم: {atk_name}",
@@ -2905,18 +2938,42 @@ class Game:
             "پدافندهای مدافع:",
             *sys_lines,
             "",
-            f"❤️ سلامت نهایی مدافع: {int(max(0, new_hp))}/{int(float(d.get('max_hp') or 1000))}",
-            f"💰 غنیمت نقدی: {int(loot):,}",
+            f"❤️ سلامت نهایی مدافع: {hp_show}/{max_hp_show}",
+            f"💰 غنیمت نقدی: {loot_show:,}",
         ]
         if cons_lines:
-            report_lines += ["", "📦 مصرف تجهیزات مهاجم:"] + list(cons_lines[:12])
+            head += ["", "📦 مصرف تجهیزات مهاجم:"] + [str(x) for x in cons_lines[:10]]
+        else:
+            head += ["", "📦 مصرف تجهیزات مهاجم:", "• بدون مصرف ثبت‌شده"]
         if sp_lines:
-            report_lines.append("متخصص: " + "، ".join(sp_lines))
-        if clog.get("ap") is not None:
-            report_lines.append(
-                f"قدرت حمله: {float(clog['ap']):.0f} | قدرت دفاع: {float(clog.get('dp') or 0):.0f}"
-            )
-        report = chr(10).join(report_lines)
+            head.append("متخصص: " + "، ".join(str(x) for x in sp_lines[:6]))
+        report = chr(10).join(head)
+        # hard cap for Bale message size — keep header + footer if needed
+        if len(report) > 3500:
+            short_sys = sys_lines[:3]
+            head = [
+                "⚔️ گزارش درگیری",
+                "",
+                f"مهاجم: {atk_name}",
+                f"مدافع: {def_name}",
+                f"نوع حمله: {kind_fa}",
+                f"شدت حمله: {pct}٪",
+                f"نتیجه: {result}",
+                "",
+                f"💥 خسارت اولیه: {int(raw_d)}",
+                f"🛡 رهگیری پدافند: {int(inter)} ({cover_p:.0f}٪ پوشش)",
+                f"✅ خسارت نهایی واردشده: {int(final_d)}",
+                f"❌ خسارت گرفته‌نشده (رهگیری‌شده): {int(inter)}",
+                "",
+                "پدافندهای مدافع:",
+                *short_sys,
+                "",
+                f"❤️ سلامت نهایی مدافع: {hp_show}/{max_hp_show}",
+                f"💰 غنیمت نقدی: {loot_show:,}",
+            ]
+            if cons_lines:
+                head += ["", "📦 مصرف تجهیزات مهاجم:"] + [str(x) for x in cons_lines[:8]]
+            report = chr(10).join(head)[:3500]
         try:
             await self.broadcast_log("attack", report)
         except Exception:
