@@ -576,6 +576,43 @@ class AllianceGroupPool:
             raise AllianceGroupError("لینک دعوت خالی بود")
         return link
 
+
+    async def free_all_on_world_reset(self, bot=None) -> int:
+        """Dissolve-style free for every assigned pool group after world reset."""
+        await self.ensure_schema()
+        bot = self.bot(bot)
+        rows = await self.db.fetch("SELECT * FROM ng_alliance_pool_groups")
+        n = 0
+        for r in rows or []:
+            try:
+                chat_id = r.get("chat_id")
+                reserve = r.get("reserve_name") or "گروه رزرو اتحاد"
+                if bot and chat_id and str(r.get("status") or "") in ("assigned", "holding"):
+                    try:
+                        await self._set_title(bot, chat_id, reserve)
+                    except Exception:
+                        log.exception("reset rename pool %s", r.get("id"))
+                    try:
+                        await self._send(
+                            bot,
+                            chat_id,
+                            "♻️ جهان ریست شد — این گروه آزاد شد و دوباره برای اتحاد جدید رزرو است.",
+                        )
+                    except Exception:
+                        pass
+                await self.db.execute(
+                    """
+                    UPDATE ng_alliance_pool_groups
+                    SET status='free', alliance_id=NULL, invite_link=NULL, assigned_at=NULL, last_error=NULL
+                    WHERE id=$1
+                    """,
+                    (int(r["id"]),),
+                )
+                n += 1
+            except Exception:
+                log.exception("free pool group %s", r.get("id"))
+        return n
+
     async def free_after_dissolve(self, alliance: dict, bot=None) -> None:
         await self.ensure_schema()
         pool_id = alliance.get("group_pool_id")

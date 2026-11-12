@@ -798,7 +798,8 @@ class Game:
             cash = float(await self.get_player_cash(int(pid)) or 0)
         except Exception:
             cash = 0.0
-        # Always prefer saved cash (even if lower than capital); only seed capital when cash is zero
+        # NEVER replace saved cash with country starting capital after reset.
+        # Only brand-new players (cash == 0) receive country starting capital.
         if cash > 0:
             start_money = float(cash)
         else:
@@ -3775,23 +3776,39 @@ class Game:
             raise GameError("مجاز نیستید")
         if confirm_phrase.strip() != "ریست کامل جهان":
             raise GameError("عبارت تأیید نادرست است.")
-        # Sync country treasuries into persistent cash before wipe
+
+        # Snapshot persistent cash: max(player.cash, live treasury) — never wipe money
+        cash_map: dict[int, float] = {}
         try:
-            owned = await self.db.fetch(
+            for row in await self.db.fetch(
+                "SELECT player_id, cash FROM ng_players"
+            ) or []:
+                try:
+                    cash_map[int(row["player_id"])] = float(row.get("cash") or 0)
+                except Exception:
+                    pass
+        except Exception:
+            log.exception("full_reset load cash")
+        try:
+            for row in await self.db.fetch(
                 "SELECT owner_player_id, treasury FROM ng_countries WHERE owner_player_id IS NOT NULL"
-            )
-            for row in owned or []:
+            ) or []:
                 try:
                     pid = int(row["owner_player_id"])
                     treas = float(row.get("treasury") or 0)
-                    cur = await self.get_player_cash(pid)
-                    # keep the higher of stored cash and live treasury so money is never lost
-                    await self.set_player_cash(pid, max(cur, treas))
+                    cash_map[pid] = max(float(cash_map.get(pid) or 0), treas)
                 except Exception:
-                    log.exception("pre-reset cash sync")
+                    pass
         except Exception:
-            log.exception("pre-reset cash bulk")
-        # Preserve player cash + referral graph across world reset
+            log.exception("full_reset treasury snapshot")
+
+        # Persist snapshot into ng_players before wipe (best effort)
+        for pid, amt in list(cash_map.items()):
+            try:
+                await self.set_player_cash(int(pid), float(amt))
+            except Exception:
+                log.exception("pre-reset set_player_cash %s", pid)
+
         saved_players = await self.db.fetch(
             "SELECT player_id, username, display_name, cash, is_banned, ban_reason FROM ng_players"
         )
@@ -3799,10 +3816,40 @@ class Game:
             saved_refs = await self.db.fetch("SELECT * FROM ng_referrals")
         except Exception:
             saved_refs = []
+
+        # Dissolve all alliances + free reserved groups BEFORE table wipe
+        freed_groups = 0
+        try:
+            pool = getattr(self, "alliance_groups", None)
+            if pool is not None:
+                freed_groups = int(await pool.free_all_on_world_reset(getattr(self, "bot", None)) or 0)
+        except Exception:
+            log.exception("full_reset free alliance groups")
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await self.db.execute(
+                "UPDATE ng_alliances SET status='dissolved', treasury=0, dissolved_at=$1 WHERE status='active'",
+                (now_iso,),
+            )
+        except Exception:
+            log.exception("full_reset dissolve alliances")
+        try:
+            await self.db.execute("DELETE FROM ng_alliance_members")
+        except Exception:
+            pass
+        try:
+            await self.db.execute("DELETE FROM ng_alliance_tx")
+        except Exception:
+            pass
+
         tables = [
             "ng_cart","ng_market","ng_peace","ng_statements","ng_daily_payouts",
             "ng_activity","ng_admin_log","ng_buildings","ng_inventory","ng_players",
-            "ng_workshop","ng_workshop_jobs","ng_npt_requests","ng_owner_inbox","ng_war_state","ng_test_mode","ng_finance_ledger","ng_player_activity","ng_cyber_effects","ng_referrals","ng_alliances","ng_alliance_members","ng_alliance_tx","ng_alliance_exits","ng_player_flags","ng_country_control","ng_laws","ng_sanctions","ng_law_daily","ng_defense_hits",
+            "ng_workshop","ng_workshop_jobs","ng_npt_requests","ng_owner_inbox","ng_war_state",
+            "ng_test_mode","ng_finance_ledger","ng_player_activity","ng_cyber_effects",
+            "ng_referrals","ng_alliances","ng_alliance_members","ng_alliance_tx","ng_alliance_exits",
+            "ng_player_flags","ng_country_control","ng_laws","ng_sanctions","ng_law_daily","ng_defense_hits",
+            "ng_legendary_effects",
         ]
         async with self.db.transaction() as tx:
             for t in tables:
@@ -3823,48 +3870,79 @@ class Game:
                 "UPDATE world_meta SET started_at=$1, reset_count=reset_count+1, war_enabled=1, nuclear_enabled=0 WHERE id=1",
                 (now,),
             )
-            for p in saved_players:
+            for p in saved_players or []:
                 try:
+                    pid = int(p["player_id"])
+                    # Prefer cash_map snapshot over possibly-stale row
+                    cash = float(cash_map.get(pid, p.get("cash") or 0) or 0)
                     await tx.execute(
                         """
                         INSERT INTO ng_players (player_id, username, display_name, country_code, is_banned, ban_reason, cash, joined_at)
                         VALUES ($1,$2,$3,NULL,$4,$5,$6,$7)
                         """,
                         (
-                            int(p["player_id"]),
+                            pid,
                             p.get("username"),
                             p.get("display_name"),
                             int(p.get("is_banned") or 0),
                             p.get("ban_reason"),
-                            float(p.get("cash") or 0),
+                            cash,
                             now,
                         ),
                     )
                 except Exception:
-                    pass
-            for r in saved_refs:
+                    log.exception("full_reset restore player")
+            for r in saved_refs or []:
                 try:
-                    cols = [k for k in r.keys()]
-                    # best-effort restore whole row via common schema
                     await tx.execute(
                         "INSERT INTO ng_referrals (referrer_id, invitee_id, code, created_at, rewarded) VALUES ($1,$2,$3,$4,$5)",
                         (
-                            r.get("referrer_id") or r.get("inviter_id"),
-                            r.get("invitee_id") or r.get("player_id"),
-                            r.get("code") or r.get("ref_code") or "",
-                            r.get("created_at") or now,
-                            int(r.get("rewarded") or 1),
+                            r.get("referrer_id"),
+                            r.get("invitee_id"),
+                            r.get("code"),
+                            r.get("created_at"),
+                            r.get("rewarded"),
                         ),
                     )
                 except Exception:
                     pass
-        await self.ensure_un_country()
-        await self.admin_log(actor, "full_reset", "world wiped keep cash+refs")
+
+        # Re-apply cash after transaction (belt and suspenders)
+        for pid, amt in cash_map.items():
+            try:
+                await self.set_player_cash(int(pid), float(amt))
+            except Exception:
+                log.exception("post-reset set_player_cash %s", pid)
+
+        # Ensure pool groups free again (table not wiped)
+        try:
+            pool = getattr(self, "alliance_groups", None)
+            if pool is not None:
+                await pool.db.execute(
+                    """
+                    UPDATE ng_alliance_pool_groups
+                    SET status='free', alliance_id=NULL, invite_link=NULL, assigned_at=NULL, last_error=NULL
+                    """
+                )
+        except Exception:
+            log.exception("post-reset force free groups")
+
+        await self.admin_log(actor, "full_reset", f"world wiped keep cash+refs free_groups={freed_groups}")
+        kept = sum(1 for v in cash_map.values() if float(v or 0) > 0)
         return (
-            "🔴 جهان ریست شد.\n"
-            "تجهیزات و کشورها آزاد شدند.\n"
-            "پول پایدار بازیکنان و دعوت‌ها حفظ شد."
+            "✅ جهان ریست شد."
+            + "\n"
+            + f"• پول بازیکنان حفظ شد ({kept} نفر با موجودی > ۰)"
+            + "\n"
+            + "• با انتخاب کشور جدید، همان پول قبلی به خزانه می‌رود (نه سرمایه اولیه کشور)"
+            + "\n"
+            + "• همه اتحادها منحل شدند"
+            + "\n"
+            + f"• گروه‌های رزرو اتحاد آزاد شدند ({freed_groups})"
+            + "\n"
+            + "• دعوت‌ها حفظ شدند"
         )
+
 
     async def admin_log(self, actor: int, action: str, detail: str) -> None:
         nid = await self.db.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_admin_log")
