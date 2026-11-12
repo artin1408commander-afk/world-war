@@ -5551,7 +5551,7 @@ class Game:
 
 
     # ---------- membership verify ----------
-    async def membership_cache_ok(self, pid: int, chat_id: str, max_age_hours: float = 12) -> bool:
+    async def membership_cache_ok(self, pid: int, chat_id: str, max_age_hours: float = 3) -> bool:
         row = await self.db.fetchrow(
             "SELECT verified_at FROM ng_member_cache WHERE player_id=$1 AND chat_id=$2",
             (pid, chat_id),
@@ -5565,6 +5565,21 @@ class Game:
             return (datetime.now(timezone.utc) - ts).total_seconds() < max_age_hours * 3600
         except Exception:
             return False
+
+    async def membership_cache_clear(self, pid: int, chat_id: str | None = None) -> None:
+        try:
+            if chat_id:
+                await self.db.execute(
+                    "DELETE FROM ng_member_cache WHERE player_id=$1 AND chat_id=$2",
+                    (pid, chat_id),
+                )
+            else:
+                await self.db.execute(
+                    "DELETE FROM ng_member_cache WHERE player_id=$1",
+                    (pid,),
+                )
+        except Exception:
+            log.exception("membership_cache_clear")
 
     async def membership_cache_set(self, pid: int, chat_id: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -5583,9 +5598,12 @@ class Game:
                 (pid, chat_id, now),
             )
 
-    async def verify_membership(self, bot, pid: int, chat_id: str) -> tuple[bool, str]:
-        """Returns (is_member, detail). detail: member|not_member|api_error"""
-        if await self.membership_cache_ok(pid, chat_id):
+    async def verify_membership(self, bot, pid: int, chat_id: str, *, force: bool = False) -> tuple[bool, str]:
+        """Returns (is_member, detail). detail: member|not_member|api_error|cache
+
+        Cache is trusted for up to 3 hours unless force=True (manual confirm).
+        """
+        if not force and await self.membership_cache_ok(pid, chat_id, max_age_hours=3):
             return True, "cache"
         if bot is None:
             return False, "api_error"
@@ -5606,12 +5624,14 @@ class Game:
                     await self.membership_cache_set(pid, chat_id)
                     return True, "is_member"
                 if getattr(m, "is_member", None) is False:
+                    await self.membership_cache_clear(pid, chat_id)
                     return False, "not_member"
                 st = str(getattr(m, "status", "") or "").lower()
                 if st in ("member", "administrator", "creator", "owner"):
                     await self.membership_cache_set(pid, chat_id)
                     return True, st
                 if st in ("left", "kicked"):
+                    await self.membership_cache_clear(pid, chat_id)
                     return False, st
                 if st == "restricted":
                     # restricted users may still be in chat

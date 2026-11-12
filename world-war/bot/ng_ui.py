@@ -183,7 +183,20 @@ def ik(rows: list) -> InlineKeyboardMarkup:
                 else:
                     continue
                 if label:
-                    kb.add(InlineKeyboardButton(str(label)[:64], callback_data=str(data)[:64]), row=ri)
+                    ds = str(data)
+                    if ds.startswith("http://") or ds.startswith("https://") or ds.startswith("ble.ir/"):
+                        if ds.startswith("ble.ir/"):
+                            ds = "https://" + ds
+                        try:
+                            kb.add(InlineKeyboardButton(str(label)[:64], url=ds[:200]), row=ri)
+                        except TypeError:
+                            # older API may use different kw
+                            try:
+                                kb.add(InlineKeyboardButton(str(label)[:64], ds[:200]), row=ri)
+                            except Exception:
+                                kb.add(InlineKeyboardButton(str(label)[:64], callback_data=("ng:joinurl:" + ds)[:64]), row=ri)
+                    else:
+                        kb.add(InlineKeyboardButton(str(label)[:64], callback_data=str(data)[:64]), row=ri)
             except Exception:
                 log.exception("ik button skip bad item=%r", item)
                 continue
@@ -428,14 +441,22 @@ def register_handlers(bot, app_ctx: dict):
         await game.touch_player(pid, username, display)
         await game.assert_not_banned(pid)
 
-    async def require_membership(pid, message_or_cq, is_callback=False):
-        """Return True if allowed; otherwise send join prompt and return False."""
+    async def require_membership(pid, message_or_cq, is_callback=False, *, force: bool = False):
+        """Block non-members when forced membership is enabled.
+
+        - First interaction: live API check
+        - Later: cache trusted up to 3 hours
+        - force=True (تأیید عضویت): always live check
+        """
         if not await game.membership_enabled():
             return True
         if game.is_owner(pid):
             return True
-        if await game.is_test_mode(pid):
-            return True
+        try:
+            if await game.is_test_mode(pid):
+                return True
+        except Exception:
+            pass
         chats = await game.active_forced_chats()
         if not chats:
             return True
@@ -443,72 +464,68 @@ def register_handlers(bot, app_ctx: dict):
         api_errors = []
         for ch in chats:
             cid = ch["chat_id"]
-            ok, detail = await game.verify_membership(bot, pid, cid)
+            ok, detail = await game.verify_membership(bot, pid, cid, force=force)
             if ok:
                 continue
             if detail == "api_error":
                 api_errors.append(ch)
             else:
                 missing.append(ch)
-        # If API cannot verify but user was recently verified, trust cache
-        if missing or api_errors:
-            # still blocked if confirmed not member
-            if missing:
-                pass
-            elif api_errors and not missing:
-                # soft-allow if all are API errors and at least one cache hit attempted
-                # re-check cache only
-                still = []
-                for ch in api_errors:
-                    if not await game.membership_cache_ok(pid, ch["chat_id"]):
-                        still.append(ch)
-                if not still:
-                    return True
-                missing = still
         if not missing and not api_errors:
             return True
-        if not missing and api_errors:
-            # cannot verify - ask owner to make bot admin; block with clear message
-            text = (
-                "⚠️ ربات نتوانست عضویت شما را از API بررسی کند.\\n"
-                "معمولاً به این دلیل است که ربات در گروه ادمین نیست.\\n"
-                "پس از ادمین شدن ربات، دوباره «تأیید عضویت» را بزنید."
-            )
-            rows = [[("✅ تلاش مجدد تأیید عضویت", "ng:joincheck")]]
-            target_rows = rows
-            lines = [text]
-            for ch in api_errors:
-                link = ch.get("invite_link") or ""
-                lines.append(f"• {ch.get('title') or ch['chat_id']}: {link}")
-            body = "\\n".join(lines)
-            if is_callback:
-                msg = getattr(message_or_cq, "message", None)
-                if msg:
-                    await msg.reply(body[:3500], components=ik(target_rows))
-            else:
-                await reply(message_or_cq, body, ik(target_rows))
-            return False
-        rows = []
-        for ch in missing:
-            rows.append([(f"عضویت در {ch.get('title') or ch['chat_id']}", f"ng:joinlink:{ch['id']}")])
-        rows.append([("✅ تأیید عضویت", "ng:joincheck")])
+        # Build prompt
         lines = [
-            "برای استفاده از ربات، ابتدا در گروه رسمی WORLD WAR عضو شوید.",
-            "پس از عضویت، دکمه تأیید را بزنید.",
+            "🔒 برای استفاده از ربات ابتدا عضو شوید.",
+            "",
+            "روی دکمه عضویت بزنید، عضو شوید، سپس «عضو شدم — تأیید» را بزنید.",
             "",
         ]
-        for ch in missing:
-            link = ch.get("invite_link") or ""
-            lines.append(f"• {ch.get('title') or ch['chat_id']}: {link}")
-        body = "\\n".join(lines)
-        if is_callback:
-            msg = getattr(message_or_cq, "message", None)
-            if msg:
-                await msg.reply(body[:3500], components=ik(rows))
-        else:
-            await reply(message_or_cq, body, ik(rows))
+        rows = []
+        show = missing if missing else api_errors
+        for ch in show:
+            title = ch.get("title") or ch.get("chat_id") or "کانال/گروه"
+            kind_fa = "کانال" if str(ch.get("kind")) == "channel" else "گروه"
+            link = (ch.get("invite_link") or "").strip()
+            if not link:
+                cid = str(ch.get("chat_id") or "")
+                if cid.startswith("@"):
+                    link = "https://ble.ir/" + cid.lstrip("@")
+            lines.append(f"• {kind_fa}: {title}")
+            if link:
+                lines.append(f"  {link}")
+                rows.append([(f"📥 عضویت در {title}"[:60], link)])
+            else:
+                rows.append([(f"📥 عضویت در {title}"[:60], f"ng:joinlink:{ch['id']}")])
+        if api_errors and not missing:
+            lines.append("")
+            lines.append("⚠️ اگر دکمه کار نکرد، مطمئن شوید ربات در آن گروه/کانال ادمین است.")
+        rows.append([("✅ عضو شدم — تأیید", "ng:joincheck")])
+        body = "\n".join(lines)
+        try:
+            if is_callback:
+                # answer callback if possible
+                try:
+                    if hasattr(message_or_cq, "answer"):
+                        await message_or_cq.answer("ابتدا عضو شوید", show_alert=False)
+                except Exception:
+                    pass
+                msg = getattr(message_or_cq, "message", None)
+                if msg is not None and hasattr(msg, "reply"):
+                    await msg.reply(body[:3500], components=ik(rows))
+                else:
+                    # fallback via bot
+                    chat_id = None
+                    try:
+                        chat_id = _extract_chat_id(getattr(message_or_cq, "message", None))
+                    except Exception:
+                        chat_id = None
+                    if chat_id is not None and hasattr(bot, "send_message"):
+                        await bot.send_message(chat_id, body[:3500], components=ik(rows))
+            else:
+                await reply(message_or_cq, body, ik(rows))
+        except Exception:
+            log.exception("require_membership prompt failed")
         return False
-
 
     @bot.listen("on_ready")
     async def on_ready():
@@ -654,10 +671,10 @@ def register_handlers(bot, app_ctx: dict):
 
             # Pending owner/player input must run before membership gate,
             # otherwise forced-join prompts swallow the typed chat id with no reply.
-            if not await _get_pending(game, pid):
-                if text not in ("/start", "شروع", "منو", "menu") and text not in (BTN_ABOUT, BTN_GUIDE, BTN_REF, BTN_NPT):
-                    if not owner and not await require_membership(pid, message, False):
-                        return
+            # Forced membership: check on every message for non-owners (3h cache inside)
+            if not owner and not await _get_pending(game, pid):
+                if not await require_membership(pid, message, False):
+                    return
 
             # ---- pending typed flows ----
             st = await _get_pending(game, pid)
@@ -1943,11 +1960,10 @@ def register_handlers(bot, app_ctx: dict):
                     await out("❌ دسترسی مجاز نیست.")
                     return
             elif data not in (
-                "ng:home", "ng:cancel", "ng:joincheck", "ng:guide",
-                "ng:acreate", "ng:acreateyes",
-            ) and not data.startswith("ng:joinlink") and not data.startswith("ng:guide:") and not data.startswith("ng:a") and not data.startswith("ng:leg"):
-                # alliance + legendary + Anonymous hacker flows must not be blocked mid-menu
-                if not await require_membership(pid, cq, True):
+                "ng:cancel", "ng:joincheck",
+            ) and not data.startswith("ng:joinlink") and not data.startswith("ng:joinurl"):
+                # All gameplay requires forced membership when enabled
+                if not owner and not await require_membership(pid, cq, True):
                     return
 
             if data in ("ng:home", "ng:busy", "ng:cancel"):
@@ -4387,15 +4403,44 @@ def register_handlers(bot, app_ctx: dict):
 
 
             if data == "ng:joincheck":
-                if await require_membership(pid, cq, True):
-                    await out("✅ عضویت تأیید شد. منوی اصلی در دسترس است.", main_kb(owner))
+                ok = await require_membership(pid, cq, True, force=True)
+                if ok:
+                    await out(
+                        "✅ عضویت تأیید شد." + chr(10) + "حالا می‌توانید از ربات استفاده کنید.",
+                        main_kb(owner, bool(code)),
+                    )
                 return
             if data.startswith("ng:joinlink:"):
                 chats = await game.list_forced_chats()
-                cid = int(data.split(":")[-1])
+                try:
+                    cid = int(data.split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر")
+                    return
                 ch = next((c for c in chats if int(c["id"]) == cid), None)
-                if ch:
-                    await out(f"لینک عضویت:\n{ch.get('invite_link') or ch['chat_id']}")
+                if not ch:
+                    await out("❌ مورد یافت نشد")
+                    return
+                link = (ch.get("invite_link") or "").strip()
+                if not link:
+                    raw = str(ch.get("chat_id") or "")
+                    if raw.startswith("@"):
+                        link = "https://ble.ir/" + raw.lstrip("@")
+                title = ch.get("title") or ch.get("chat_id")
+                if link:
+                    await out(
+                        f"📥 لینک عضویت «{title}»:" + chr(10) + str(link) + chr(10) + chr(10)
+                        + "عضو شوید سپس «عضو شدم — تأیید» را بزنید.",
+                        ik([
+                            [("📥 باز کردن لینک", link)],
+                            [("✅ عضو شدم — تأیید", "ng:joincheck")],
+                        ]),
+                    )
+                else:
+                    await out(
+                        f"شناسه: {ch.get('chat_id')}" + chr(10) + "لینک ثبت نشده. از جست‌وجوی بله عضو شوید.",
+                        ik([[("✅ عضو شدم — تأیید", "ng:joincheck")]]),
+                    )
                 return
 
 
