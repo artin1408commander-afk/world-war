@@ -579,11 +579,15 @@ def register_handlers(bot, app_ctx: dict):
                 ]
                 await reply(message, str(summary) + chr(10) + chr(10) + "دستورات: /admin /owner /panel", ik(rows))
                 return
-            if text not in ("/start", "شروع", "منو", "menu") and text not in (BTN_ABOUT, BTN_GUIDE, BTN_REF, BTN_NPT):
-                if not await require_membership(pid, message, False):
-                    return
             owner = game.is_owner(pid)
             code = await game.player_country(pid)
+
+            # Pending owner/player input must run before membership gate,
+            # otherwise forced-join prompts swallow the typed chat id with no reply.
+            if pid not in _pending:
+                if text not in ("/start", "شروع", "منو", "menu") and text not in (BTN_ABOUT, BTN_GUIDE, BTN_REF, BTN_NPT):
+                    if not owner and not await require_membership(pid, message, False):
+                        return
 
             # ---- pending typed flows ----
             if pid in _pending:
@@ -954,6 +958,28 @@ def register_handlers(bot, app_ctx: dict):
                         log.exception("set_log_group")
                         await reply(message, "❌ خطا در تنظیم گروه لاگ")
                     return
+                if kind == "force_add_chat":
+                    if not owner:
+                        _pending.pop(pid, None)
+                        await reply(message, "❌ فقط مالک")
+                        return
+                    try:
+                        msg = await game.add_forced_chat(pid, text, bot=bot)
+                        _pending.pop(pid, None)
+                        await reply(
+                            message,
+                            msg,
+                            ik([
+                                [("⚙️ عضویت اجباری", "ng:oforce")],
+                                back_row(),
+                            ]),
+                        )
+                    except GameError as e:
+                        await reply(message, f"❌ {e}", ik([cancel_row()]))
+                    except Exception:
+                        log.exception("force_add_chat")
+                        await reply(message, "❌ خطا در افزودن گروه/کانال. دوباره تلاش کنید.", ik([cancel_row()]))
+                    return
                 if kind == "owner_hp_all":
                     try:
                         amount = game.parse_money_amount(text)
@@ -1262,6 +1288,15 @@ def register_handlers(bot, app_ctx: dict):
                             ik([cancel_row()]),
                         )
                     return
+
+                # Unknown pending step — do not swallow input silently
+                _pending.pop(pid, None)
+                await reply(
+                    message,
+                    "❌ این مرحله ورودی منقضی یا نامعتبر بود. دوباره از منو اقدام کنید.",
+                    main_kb(owner),
+                )
+                return
 
             # ---- main menu ----
             if text in ("/start", "شروع", "منو", "menu") or text.startswith("/start"):
