@@ -661,7 +661,9 @@ def register_handlers(bot, app_ctx: dict):
                     [("💎 حمایت مالی", "ng:odonate")],
                     [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
                     [("🏷 قیمت فروشگاه", "ng:oprices"), ("🏷 تخفیف فروشگاه", "ng:odiscount")],
-                    [("☠️ هاردکور روشن", "ng:ohardcore:1"), ("🕊 هاردکور خاموش", "ng:ohardcore:0")],
+                    [("☠️ هاردکور روشن", "ng:ohardcore:1")],
+                    [("🕊 هاردکور خاموش", "ng:ohardcore:0")],
+                    [("☠️ وضعیت هاردکور", "ng:ohardcore:status")],
                     [("🔴 ریست کامل جهان", "ng:oreset1")],
                 ]
                 await reply(message, str(summary) + chr(10) + chr(10) + "دستورات: /admin /owner /panel", ik(rows))
@@ -3849,22 +3851,57 @@ def register_handlers(bot, app_ctx: dict):
                 except GameError as e:
                     await out(f"❌ {e}")
                 return
+            if data == "ng:ohardcore:status":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                on = await game.is_hardcore_mode()
+                await out(
+                    ("☠️ هاردکور روشن است." if on else "✅ هاردکور خاموش است.")
+                    + chr(10)
+                    + ("نابودشده‌ها نمی‌توانند کشور بگیرند تا خاموش شود." if on else "انتخاب کشور آزاد است."),
+                    ik([
+                        [("☠️ روشن کردن", "ng:ohardcore:1")],
+                        [("🕊 خاموش کردن", "ng:ohardcore:0")],
+                        [("⬅️ پنل مالک", "ng:opanel")],
+                    ]),
+                    force_new=True,
+                )
+                return
             if data == "ng:ohardcore" or data.startswith("ng:ohardcore:"):
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
                     return
                 try:
                     if data.startswith("ng:ohardcore:"):
-                        en = data.endswith(":1")
+                        tail = data.split(":")[-1].strip().lower()
+                        if tail == "status":
+                            en = await game.is_hardcore_mode()
+                            await out(
+                                ("☠️ هاردکور روشن است." if en else "✅ هاردکور خاموش است."),
+                                force_new=True,
+                            )
+                            return
+                        en = tail in ("1", "on", "true", "yes")
                     else:
                         en = not await game.is_hardcore_mode()
                     msg = await game.set_hardcore_mode(pid, en)
-                    await out(msg, force_new=True)
+                    on = await game.is_hardcore_mode()
+                    status = "☠️ روشن" if on else "✅ خاموش"
+                    await out(
+                        msg + chr(10) + chr(10) + f"وضعیت فعلی هاردکور: {status}",
+                        ik([
+                            [("☠️ روشن کردن هاردکور", "ng:ohardcore:1")],
+                            [("🕊 خاموش کردن هاردکور", "ng:ohardcore:0")],
+                            [("⬅️ پنل مالک", "ng:opanel")],
+                        ]),
+                        force_new=True,
+                    )
                 except GameError as e:
                     await out(f"❌ {e}", force_new=True)
                 except Exception as e:
                     log.exception("ohardcore")
-                    await out(f"❌ {e}", force_new=True)
+                    await out(f"❌ خطا در هاردکور: {e}", force_new=True)
                 return
 
             if data == "ng:orefstats":

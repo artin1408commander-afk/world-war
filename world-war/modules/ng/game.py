@@ -107,6 +107,7 @@ class Game:
             "ALTER TABLE world_meta ADD COLUMN last_daily_date TEXT",
             "ALTER TABLE world_meta ADD COLUMN main_group_id TEXT",
             "ALTER TABLE world_meta ADD COLUMN log_group_id TEXT",
+            "ALTER TABLE world_meta ADD COLUMN hardcore_mode INTEGER NOT NULL DEFAULT 0",
             """CREATE TABLE IF NOT EXISTS ng_user_pending (
                 player_id BIGINT PRIMARY KEY,
                 kind TEXT NOT NULL,
@@ -1603,43 +1604,86 @@ class Game:
             log.exception("touch_activity")
 
     async def is_hardcore_mode(self) -> bool:
+        """True when hardcore is ON. Prefer world_meta, fallback ng_bot_settings."""
         try:
             try:
-                await self.ensure_bot_settings_table()
+                await self.db.execute(
+                    "ALTER TABLE world_meta ADD COLUMN hardcore_mode INTEGER NOT NULL DEFAULT 0"
+                )
             except Exception:
                 pass
+            meta = await self.db.fetchrow("SELECT hardcore_mode FROM world_meta WHERE id=1")
+            if meta is not None and meta.get("hardcore_mode") is not None:
+                return int(meta.get("hardcore_mode") or 0) == 1
+        except Exception:
+            log.exception("is_hardcore_mode world_meta")
+        try:
+            await self.ensure_bot_settings_table()
             row = await self.db.fetchrow(
                 "SELECT value FROM ng_bot_settings WHERE key=$1", ("hardcore_mode",)
             )
             return str((row or {}).get("value") or "0").strip().lower() in ("1", "true", "on", "yes")
         except Exception:
-            log.exception("is_hardcore_mode")
+            log.exception("is_hardcore_mode settings")
             return False
 
     async def set_hardcore_mode(self, actor: int, enabled: bool) -> str:
         if not self.is_owner(int(actor)):
             raise GameError("فقط مالک")
+        enabled = bool(enabled)
+        flag = 1 if enabled else 0
+        # 1) world_meta (authoritative)
         try:
-            await self.ensure_bot_settings_table()
+            await self.db.execute(
+                "ALTER TABLE world_meta ADD COLUMN hardcore_mode INTEGER NOT NULL DEFAULT 0"
+            )
         except Exception:
             pass
-        await self._write_setting_raw("hardcore_mode", "1" if enabled else "0")
-        ok = await self.is_hardcore_mode()
-        if bool(enabled) != bool(ok):
-            await self.db.execute("DELETE FROM ng_bot_settings WHERE key=$1", ("hardcore_mode",))
+        try:
             await self.db.execute(
-                "INSERT INTO ng_bot_settings (key, value) VALUES ($1,$2)",
-                ("hardcore_mode", "1" if enabled else "0"),
+                "UPDATE world_meta SET hardcore_mode=$1 WHERE id=1",
+                (flag,),
             )
+        except Exception:
+            log.exception("set hardcore world_meta")
+            raise GameError("ذخیره هاردکور در دیتابیس ناموفق بود")
+        # 2) mirror to bot settings
+        try:
+            await self.ensure_bot_settings_table()
+            await self._write_setting_raw("hardcore_mode", "1" if enabled else "0")
+        except Exception:
+            log.exception("mirror hardcore to settings")
+        ok = await self.is_hardcore_mode()
+        if bool(ok) != enabled:
+            # force rewrite
+            try:
+                await self.db.execute(
+                    "UPDATE world_meta SET hardcore_mode=$1 WHERE id=1",
+                    (flag,),
+                )
+            except Exception:
+                pass
             ok = await self.is_hardcore_mode()
-        await self.admin_log(int(actor), "hardcore_mode", "on" if enabled else "off")
+        try:
+            await self.admin_log(int(actor), "hardcore_mode", "on" if ok else "off")
+        except Exception:
+            pass
         if ok:
+            try:
+                await self.log_activity(
+                    "admin",
+                    "☠️ حالت هاردکور توسط مالک روشن شد — نابودی = قفل دائمی تا خاموش شدن هاردکور",
+                    None,
+                    int(actor),
+                )
+            except Exception:
+                pass
             return (
-                "☠️ حالت هاردکور روشن شد." + chr(10)
-                + "هر بازیکنی که نابود شود تا وقتی هاردکور خاموش نشود نمی‌تواند کشور جدید بگیرد." + chr(10)
-                + "فقط ریکاوری/تنظیم کشور توسط مالک استثنا است."
+                "☠️ حالت هاردکور روشن شد و ذخیره شد." + chr(10)
+                + "اگر بازیکنی نابود شود تا وقتی هاردکور خاموش نشود نمی‌تواند کشور جدید بگیرد." + chr(10)
+                + "فقط ریکاوری یا تنظیم کشور توسط مالک استثنا است."
             )
-        # OFF → unlock everyone so they can claim again
+        # OFF → unlock everyone
         try:
             await self.ensure_player_flags_table()
             await self.db.execute(
@@ -1660,15 +1704,23 @@ class Game:
         except Exception:
             log.exception("clear hardcore_dead")
         try:
-            # hardcore used a long cooldown; clear so they can reclaim after OFF
             await self.db.execute(
                 "UPDATE ng_players SET destroy_cooldown_until=NULL WHERE destroy_cooldown_until IS NOT NULL"
             )
         except Exception:
             pass
+        try:
+            await self.log_activity(
+                "admin",
+                "✅ حالت هاردکور خاموش شد — بازیکنان می‌توانند دوباره کشور بگیرند",
+                None,
+                int(actor),
+            )
+        except Exception:
+            pass
         return (
-            "✅ حالت هاردکور خاموش شد." + chr(10)
-            + "بازیکنان نابودشده می‌توانند دوباره کشور بگیرند."
+            "✅ حالت هاردکور خاموش شد و ذخیره شد." + chr(10)
+            + "بازیکنان نابودشده می‌توانند دوباره کشور انتخاب کنند."
         )
 
     async def has_hardcore_lock(self, pid: int) -> bool:
@@ -1690,12 +1742,15 @@ class Game:
         except Exception:
             pass
         try:
-            p = await self.db.fetchrow(
-                "SELECT hardcore_dead FROM ng_players WHERE player_id=$1", (pid,)
+            row = await self.db.fetchrow(
+                "SELECT hardcore_dead FROM ng_players WHERE player_id=$1",
+                (pid,),
             )
-            return int((p or {}).get("hardcore_dead") or 0) == 1
+            if int((row or {}).get("hardcore_dead") or 0) == 1:
+                return True
         except Exception:
-            return False
+            log.exception("has_hardcore_lock players")
+        return False
 
     async def set_hardcore_lock(self, pid: int, locked: bool) -> None:
         await self.ensure_player_flags_table()
@@ -1750,12 +1805,14 @@ class Game:
         await self.set_hardcore_lock(pid, False)
 
     async def assert_can_claim_country(self, pid: int) -> None:
+        pid = int(pid)
         if not await self.is_hardcore_mode():
             return
-        if await self.has_hardcore_lock(int(pid)):
+        locked = await self.has_hardcore_lock(pid)
+        if locked:
             raise GameError(
                 "☠️ حالت هاردکور فعال است." + chr(10)
-                + "پس از نابودی تا خاموش‌شدن هاردکور توسط مالک نمی‌توانید کشور بگیرید."
+                + "کشور شما نابود شده و تا وقتی مالک هاردکور را خاموش نکند نمی‌توانید کشور جدید بگیرید."
             )
 
     async def admin_adjust_hp_all(self, actor: int, delta: float) -> str:
