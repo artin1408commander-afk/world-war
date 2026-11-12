@@ -264,9 +264,24 @@ async def async_main() -> None:
         asyncio.create_task(group_log_loop(game, bot))
         asyncio.create_task(owner_inbox_loop(game, bot, settings.owner_id))
         asyncio.create_task(dm_notice_loop(game, bot))
-        log.info("Starting bot connect()")
+        log.info("Starting Bale bot (python-bale-bot polling)")
+        # python-bale-bot 2.5 has NO bot.connect().
+        # Lifecycle: async with bot -> get_me -> updater.setup -> start_polling
         async with bot:
-            await bot.connect()
+            try:
+                me = await bot.get_me()
+                uname = getattr(me, "username", None) or getattr(me, "first_name", None)
+                uid = getattr(me, "id", None) or getattr(me, "user_id", None)
+                log.info("Bale identity ok user=%s id=%s", uname, uid)
+            except Exception:
+                log.exception("bot.get_me failed — check BALE_TOKEN")
+                raise
+            updater = getattr(bot, "updater", None)
+            if updater is None:
+                raise RuntimeError("Bot.updater missing — incompatible python-bale-bot version")
+            await updater.setup()
+            log.info("Updater polling started — waiting for messages")
+            await updater.start_polling()
     finally:
         await db.close()
 
