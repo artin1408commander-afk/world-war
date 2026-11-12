@@ -644,6 +644,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("جنگ باز", "ng:owar:1"), ("جنگ بسته", "ng:owar:0")],
                     [("🔒 قطع خرید", "ng:oshop:1"), ("🔓 آزاد خرید", "ng:oshop:0")],
                     [("هسته‌ای فعال", "ng:onuke:1"), ("هسته‌ای خاموش", "ng:onuke:0")],
+                    [("⏱ کول‌داون حمله ۳۰ث + اتم ۶۰ث", "ng:ocdstd")],
                     [("⏱ کول‌داون ۲د", "ng:ocd:120"), ("⏱ کول‌داون ۵د", "ng:ocd:300")],
                     [("بیانیه‌ها", "ng:ostmt"), ("درخواست‌های NPT", "ng:onpt")],
                     [("📜 قوانین در انتظار", "ng:olaws")],
@@ -664,6 +665,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("☠️ هاردکور روشن", "ng:ohardcore:1")],
                     [("🕊 هاردکور خاموش", "ng:ohardcore:0")],
                     [("☠️ وضعیت هاردکور", "ng:ohardcore:status")],
+                    [("⏱ کول‌داون ۳۰ث/اتم۶۰ث", "ng:ocdstd")],
                     [("🔴 ریست کامل جهان", "ng:oreset1")],
                 ]
                 await reply(message, str(summary) + chr(10) + chr(10) + "دستورات: /admin /owner /panel", ik(rows))
@@ -4263,6 +4265,19 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ خطا در ریکاوری: {e}")
                 return
 
+            if data == "ng:ocdstd":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    msg = await game.apply_standard_war_cooldowns(pid)
+                    await out(msg, force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("ocdstd")
+                    await out(f"❌ {e}", force_new=True)
+                return
             if data.startswith("ng:ocd:"):
                 try:
                     sec = int(data.split(":")[-1])

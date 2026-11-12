@@ -181,6 +181,13 @@ class Game:
         await self.ensure_un_country()
         await self.ensure_all_owner_countries()
         await self._seed_bot_settings()
+        # Apply owner-requested global war cooldowns (safe; does not touch war/hardcore flags)
+        try:
+            await self._write_setting_raw("attack_cooldown_sec", "30")
+            await self._write_setting_raw("nuke_cooldown_sec", "60")
+            log.info("war cooldowns applied: attack=30s nuke=60s")
+        except Exception:
+            log.exception("apply war cooldowns on bootstrap")
         await self._seed_membership()
 
     def _default_logs(self) -> dict:
@@ -1453,11 +1460,13 @@ class Game:
         return False
 
     # ---------- war ----------
-    ATTACK_COOLDOWN_SEC = 120  # 2 minutes for all except UN
+    ATTACK_COOLDOWN_SEC = 30  # normal attacks default
+    NUKE_COOLDOWN_SEC = 60  # nuclear attacks default
 
     async def attack_cooldown_sec(self) -> int:
-        """Player attack cooldown; UN bypasses separately. Owner can override via setting."""
+        """Normal attack cooldown; UN bypasses separately. Owner can override via setting."""
         try:
+            await self.ensure_bot_settings_table()
             row = await self.db.fetchrow(
                 "SELECT value FROM ng_bot_settings WHERE key=$1", ("attack_cooldown_sec",)
             )
@@ -1465,7 +1474,20 @@ class Game:
                 return max(0, min(3600, int(row["value"])))
         except Exception:
             pass
-        return int(getattr(self, "ATTACK_COOLDOWN_SEC", 120) or 120)
+        return int(getattr(self, "ATTACK_COOLDOWN_SEC", 30) or 30)
+
+    async def nuke_cooldown_sec(self) -> int:
+        """Nuclear attack cooldown. Default 60 seconds."""
+        try:
+            await self.ensure_bot_settings_table()
+            row = await self.db.fetchrow(
+                "SELECT value FROM ng_bot_settings WHERE key=$1", ("nuke_cooldown_sec",)
+            )
+            if row and str(row.get("value") or "").strip().isdigit():
+                return max(0, min(3600, int(row["value"])))
+        except Exception:
+            pass
+        return int(getattr(self, "NUKE_COOLDOWN_SEC", 60) or 60)
 
     async def set_attack_cooldown_sec(self, actor: int, seconds: int) -> str:
         if not self.is_owner(actor):
@@ -1473,7 +1495,39 @@ class Game:
         seconds = max(0, min(3600, int(seconds)))
         await self._write_setting_raw("attack_cooldown_sec", str(seconds))
         await self.admin_log(actor, "attack_cooldown", str(seconds))
-        return f"✅ کول‌داون حمله بازیکنان: {seconds} ثانیه ({seconds/60:.1f} دقیقه). سازمان ملل بدون کول‌داون است."
+        return f"✅ کول‌داون حمله عادی: {seconds} ثانیه. سازمان ملل بدون کول‌داون است."
+
+    async def set_nuke_cooldown_sec(self, actor: int, seconds: int) -> str:
+        if not self.is_owner(actor):
+            raise GameError("فقط مالک")
+        seconds = max(0, min(3600, int(seconds)))
+        await self._write_setting_raw("nuke_cooldown_sec", str(seconds))
+        await self.admin_log(actor, "nuke_cooldown", str(seconds))
+        return f"✅ کول‌داون حمله اتمی: {seconds} ثانیه."
+
+    async def apply_standard_war_cooldowns(self, actor: int) -> str:
+        """Preset: normal 30s, nuclear 60s. Does not change war open/closed or hardcore."""
+        if not self.is_owner(int(actor)):
+            raise GameError("فقط مالک")
+        await self._write_setting_raw("attack_cooldown_sec", "30")
+        await self._write_setting_raw("nuke_cooldown_sec", "60")
+        try:
+            await self.admin_log(int(actor), "war_cooldowns", "atk=30 nuke=60")
+        except Exception:
+            pass
+        a = await self.attack_cooldown_sec()
+        n = await self.nuke_cooldown_sec()
+        return (
+            "✅ محدودیت حمله تنظیم شد."
+            + chr(10)
+            + "وضعیت جنگ و هاردکور تغییر نکرد."
+            + chr(10)
+            + f"⚔️ حمله عادی: {a} ثانیه"
+            + chr(10)
+            + f"☢️ حمله اتمی: {n} ثانیه"
+            + chr(10)
+            + "سازمان ملل بدون کول‌داون است."
+        )
 
     PLAYER_FAST_ATTACK_CD_SEC = 30
 
@@ -4760,6 +4814,8 @@ class Game:
         defaults = {
             "start_message": self.DEFAULT_START,
             "about_message": self.DEFAULT_ABOUT,
+            "attack_cooldown_sec": "30",
+            "nuke_cooldown_sec": "60",
         }
         for k, v in defaults.items():
             row = await self.db.fetchrow("SELECT key FROM ng_bot_settings WHERE key=$1", (k,))
@@ -4767,6 +4823,7 @@ class Game:
                 await self.db.execute(
                     "INSERT INTO ng_bot_settings (key, value) VALUES ($1,$2)", (k, v)
                 )
+
 
     async def get_setting(self, key: str, default: str = "") -> str:
         row = await self.db.fetchrow("SELECT value FROM ng_bot_settings WHERE key=$1", (key,))
@@ -5879,9 +5936,13 @@ class Game:
                     if last.tzinfo is None:
                         last = last.replace(tzinfo=timezone.utc)
                     elapsed = (now - last).total_seconds()
-                    need_cd = await self.effective_attack_cooldown_sec(attacker)
+                    # nuclear uses dedicated nuke cooldown (default 60s)
+                    need_cd = await self.nuke_cooldown_sec()
+                    # UN/hacker free_atk already skipped this block
                     if elapsed < need_cd:
-                        raise GameError(f"محدودیت حمله: {int(need_cd - elapsed)} ثانیه.")
+                        raise GameError(
+                            f"محدودیت حمله اتمی: {int(need_cd - elapsed)} ثانیه دیگر صبر کنید."
+                        )
                 except GameError:
                     raise
                 except Exception:
