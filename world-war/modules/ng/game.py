@@ -5251,23 +5251,144 @@ class Game:
             "SELECT * FROM ng_forced_chats ORDER BY id"
         )
 
-    async def add_forced_chat(self, actor: int, chat_id: str, title: str, link: str = "", kind: str = "group") -> str:
+    def _normalize_chat_ref(self, raw: str) -> str:
+        ref = (raw or "").strip().replace(" ", "")
+        for ch in ("\u200e", "\u200f", "\u200c", "\ufeff"):
+            ref = ref.replace(ch, "")
+        low = ref.lower()
+        if "t.me/" in low or "ble.ir/" in low:
+            part = ref.rstrip("/").split("/")[-1]
+            if part.startswith("+"):
+                raise GameError("لینک دعوت خصوصی پشتیبانی نمی‌شود. @یوزرنیم یا آیدی عددی بفرستید.")
+            ref = part if part.startswith("@") else ("@" + part)
+        if not ref:
+            raise GameError("آیدی عددی یا @یوزرنیم را بفرستید.")
+        if ref.lstrip("-").isdigit():
+            return str(int(ref))
+        if ref.startswith("@"):
+            if len(ref) < 5:
+                raise GameError("یوزرنیم کوتاه است.")
+            return "@" + ref.lstrip("@")
+        if ref.replace("_", "").isalnum() and len(ref) >= 4:
+            return "@" + ref
+        raise GameError("فرمت نامعتبر. مثال: @warworld3 یا -1001234567890")
+
+    async def _probe_bot_admin(self, bot, chat_ref: str) -> tuple[str, str, str, str]:
+        """Return (chat_id, title, kind, invite_link). Raises GameError if bot not admin when bot is provided."""
+        title = chat_ref
+        kind = "group"
+        invite = ""
+        resolved = chat_ref
+        if bot is None:
+            if chat_ref.startswith("@"):
+                invite = "https://ble.ir/" + chat_ref.lstrip("@")
+            return resolved, title, kind, invite
+        try:
+            chat = None
+            if hasattr(bot, "get_chat"):
+                candidates = [chat_ref]
+                if chat_ref.startswith("@"):
+                    candidates.append(chat_ref[1:])
+                for cid in candidates:
+                    try:
+                        chat = await bot.get_chat(cid)
+                        if chat is not None:
+                            break
+                    except Exception:
+                        continue
+            if chat is not None:
+                cid_val = getattr(chat, "id", None)
+                if cid_val is not None:
+                    resolved = str(cid_val)
+                title = (
+                    getattr(chat, "title", None)
+                    or getattr(chat, "full_name", None)
+                    or getattr(chat, "username", None)
+                    or chat_ref
+                )
+                uname = getattr(chat, "username", None)
+                if uname:
+                    invite = "https://ble.ir/" + str(uname).lstrip("@")
+                ctype = str(getattr(chat, "type", None) or getattr(chat, "chat_type", None) or "").lower()
+                if "channel" in ctype:
+                    kind = "channel"
+                else:
+                    kind = "group"
+        except Exception as e:
+            log.warning("get_chat force membership failed: %s", e)
+
+        try:
+            me = None
+            if hasattr(bot, "get_me"):
+                me = await bot.get_me()
+            bot_id = getattr(me, "id", None) if me is not None else None
+            if bot_id is None:
+                raise GameError("شناسه ربات مشخص نشد.")
+            if not hasattr(bot, "get_chat_member"):
+                raise GameError("API بررسی عضویت در دسترس نیست.")
+            member = None
+            for cid in (resolved, chat_ref, str(chat_ref).lstrip("@")):
+                try:
+                    member = await bot.get_chat_member(cid, bot_id)
+                    if member is not None:
+                        break
+                except Exception:
+                    continue
+            if member is None:
+                raise GameError(
+                    "ربات در این گروه/کانال پیدا نشد. ابتدا ربات را عضو کنید و ادمین بگذارید."
+                )
+            st = str(getattr(member, "status", None) or getattr(member, "member_status", None) or "").lower()
+            is_admin = bool(getattr(member, "is_chat_admin", False)) or st in (
+                "administrator", "creator", "owner", "admin"
+            )
+            if not is_admin:
+                raise GameError(
+                    "ربات عضو است ولی ادمین نیست. برای بررسی عضویت کاربران، ربات باید ادمین باشد."
+                )
+        except GameError:
+            raise
+        except Exception as e:
+            log.warning("bot admin probe failed: %s", e)
+            raise GameError(
+                "نتوانستم وضعیت ادمین بودن ربات را بررسی کنم. مطمئن شوید ربات عضو و ادمین است."
+            )
+
+        if not invite and str(chat_ref).startswith("@"):
+            invite = "https://ble.ir/" + str(chat_ref).lstrip("@")
+        return str(resolved), str(title), kind, invite or ""
+
+    async def add_forced_chat(self, actor: int, chat_id: str, title: str = "", link: str = "", kind: str = "group", bot=None) -> str:
         if not self.is_owner(actor):
             raise GameError("مجاز نیستید")
-        chat_id = (chat_id or "").strip()
-        if not chat_id:
-            raise GameError("شناسه نامعتبر")
-        kind = kind if kind in ("group", "channel") else "group"
+        ref = self._normalize_chat_ref(chat_id)
+        resolved, title2, kind2, invite = await self._probe_bot_admin(bot, ref)
+        title = (title or title2 or ref).strip()
+        link = (link or invite or "").strip()
+        if kind not in ("group", "channel"):
+            kind = kind2 if kind2 in ("group", "channel") else "group"
+        store_id = resolved if str(resolved).lstrip("-").isdigit() else ref
+        exists = await self.db.fetchrow(
+            "SELECT id FROM ng_forced_chats WHERE chat_id=$1 OR chat_id=$2",
+            (store_id, ref),
+        )
+        if exists:
+            await self.db.execute(
+                "UPDATE ng_forced_chats SET title=$1, invite_link=$2, kind=$3, active=1, chat_id=$4 WHERE id=$5",
+                (title, link, kind, store_id, int(exists["id"])),
+            )
+            await self.admin_log(actor, "force_update", store_id)
+            return f"✅ به‌روزرسانی شد: {title} ({'کانال' if kind == 'channel' else 'گروه'})\nشناسه: {store_id}"
         nid = await self.db.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_forced_chats")
         await self.db.execute(
             """
             INSERT INTO ng_forced_chats (id, chat_id, title, invite_link, kind, active)
             VALUES ($1,$2,$3,$4,$5,1)
             """,
-            (int(nid["id"]), chat_id, title or chat_id, link or "", kind),
+            (int(nid["id"]), store_id, title, link, kind),
         )
-        await self.admin_log(actor, "force_add", chat_id)
-        return "✅ اضافه شد."
+        await self.admin_log(actor, "force_add", store_id)
+        return f"✅ اضافه شد: {title} ({'کانال' if kind == 'channel' else 'گروه'})\nشناسه: {store_id}"
 
     async def remove_forced_chat(self, actor: int, chat_pk: int) -> str:
         if not self.is_owner(actor):

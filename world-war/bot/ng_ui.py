@@ -5012,39 +5012,90 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             if data == "ng:oforce":
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
                 enabled = await game.membership_enabled()
                 chats = await game.list_forced_chats()
-                lines = [f"عضویت اجباری: {'فعال' if enabled else 'خاموش'}", ""]
+                lines = [
+                    "⚙️ عضویت اجباری",
+                    f"وضعیت: {'🟢 فعال' if enabled else '🔴 خاموش'}",
+                    "",
+                    "فهرست گروه/کانال‌ها:",
+                ]
+                if not chats:
+                    lines.append("— موردی ثبت نشده —")
                 for c in chats:
-                    lines.append(f"#{c['id']} {c['title']} ({c['kind']}) {c['chat_id']} {'🟢' if int(c['active']) else '🔴'}")
+                    kind_fa = "کانال" if str(c.get("kind")) == "channel" else "گروه"
+                    st = "🟢" if int(c.get("active") or 0) else "🔴"
+                    lines.append(
+                        f"{st} #{c['id']} | {c.get('title') or '-'} | {kind_fa} | {c.get('chat_id')}"
+                    )
+                lines.append("")
+                lines.append("برای افزودن: ربات باید عضو و ادمین گروه/کانال باشد.")
                 rows = [
-                    [("فعال", "ng:oforce:on"), ("خاموش", "ng:oforce:off")],
-                    [("افزودن @warworld3", "ng:oforce:adddefault")],
+                    [("🟢 فعال", "ng:oforce:on"), ("🔴 خاموش", "ng:oforce:off")],
+                    [("➕ افزودن گروه/کانال", "ng:oforce:add")],
+                    [("➕ افزودن @warworld3", "ng:oforce:adddefault")],
                 ]
                 for c in chats:
-                    rows.append([(f"حذف #{c['id']}", f"ng:oforce:del:{c['id']}")])
+                    label = f"🗑 حذف #{c['id']} {c.get('title') or c.get('chat_id')}"
+                    rows.append([(label[:60], f"ng:oforce:del:{c['id']}")])
                 rows.append(back_row())
-                await out("\n".join(lines), ik(rows))
+                await out("\n".join(lines), ik(rows), force_new=True)
                 return
             if data == "ng:oforce:on":
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
                 await out(await game.set_membership_enabled(pid, True))
                 return
             if data == "ng:oforce:off":
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
                 await out(await game.set_membership_enabled(pid, False))
                 return
+            if data == "ng:oforce:add":
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
+                _pending[pid] = {"kind": "force_add_chat"}
+                await out(
+                    "➕ افزودن گروه یا کانال به عضویت اجباری\n\n"
+                    "شرایط:\n"
+                    "• ربات باید در گروه/کانال عضو باشد\n"
+                    "• ربات باید ادمین باشد\n"
+                    "• هم گروه و هم کانال پشتیبانی می‌شود\n\n"
+                    "آیدی عددی یا @یوزرنیم را بفرستید:\n"
+                    "مثال: @warworld3\n"
+                    "مثال: -1001234567890",
+                    ik([cancel_row()]),
+                    force_new=True,
+                )
+                return
             if data == "ng:oforce:adddefault":
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
                 try:
-                    await out(await game.add_forced_chat(pid, "@warworld3", "WORLD WAR", "https://ble.ir/warworld3", "group"))
+                    msg = await game.add_forced_chat(
+                        pid, "@warworld3", "WORLD WAR", "https://ble.ir/warworld3", "group", bot=bot
+                    )
+                    await out(msg)
                 except GameError as e:
                     await out(f"❌ {e}")
                 return
             if data.startswith("ng:oforce:del:"):
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
                 try:
-                    await out(await game.remove_forced_chat(pid, int(data.split(":")[-1])))
+                    msg = await game.remove_forced_chat(pid, int(data.split(":")[-1]))
+                    await out(msg)
                 except GameError as e:
                     await out(f"❌ {e}")
                 return
-
 
 
             if data == "ng:ohack" or data == "ng:ohack:menu":
