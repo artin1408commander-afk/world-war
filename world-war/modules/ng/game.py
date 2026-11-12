@@ -7122,18 +7122,7 @@ class Game:
         """Save country peak state for owner recovery (6h window)."""
         if not player_id or not country_code:
             return
-        try:
-            # close previous unrecovered snapshots so the newest destroy is recoverable
-            await tx.execute(
-                """
-                UPDATE ng_destroy_snapshots
-                SET recovered=1, recovered_at=$1
-                WHERE player_id=$2 AND COALESCE(recovered,0)=0
-                """,
-                (datetime.now(timezone.utc).isoformat(), int(player_id)),
-            )
-        except Exception:
-            pass
+        # previous unrecovered snaps are closed after successful insert below
         c = await tx.fetchrow(
             "SELECT treasury, max_hp, hp FROM ng_countries WHERE country_code=$1",
             (country_code,),
@@ -7179,6 +7168,17 @@ class Game:
                 now,
             ),
         )
+        try:
+            await tx.execute(
+                """
+                UPDATE ng_destroy_snapshots
+                SET recovered=1, recovered_at=$1
+                WHERE player_id=$2 AND COALESCE(recovered,0)=0 AND id<>$3
+                """,
+                (now, int(player_id), int(sid)),
+            )
+        except Exception:
+            pass
         if clear_assets:
             await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (country_code,))
             try:
@@ -7390,7 +7390,7 @@ class Game:
         )
 
     async def recover_destroyed_player(self, actor: int, target_id: int) -> str:
-        """Owner recovery: restore last destroyed country to peak (no hard 6h block for owner)."""
+        """Owner recovery: restore last destroyed country to peak state. Ignores 6h window for owner."""
         if not self.is_owner(int(actor)):
             raise GameError("فقط مالک")
         target_id = int(target_id)
@@ -7398,22 +7398,39 @@ class Game:
         p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (target_id,))
         if not p:
             raise GameError("بازیکن یافت نشد")
-        live = await self.resolve_country_for_player(target_id)
+        live = None
+        try:
+            live = await self.resolve_country_for_player(target_id)
+        except Exception:
+            live = p.get("country_code")
         if live:
             raise GameError(
                 f"این بازیکن هم‌اکنون کشور دارد ({live}). "
-                "اول کشور فعلی را آزاد/ریست کنید یا از «تنظیم کشور» استفاده کنید."
+                "اول با ریست کشور فعلی را آزاد کنید یا از «تنظیم کشور» استفاده کنید."
             )
         snap = await self.get_latest_destroy_snapshot(target_id)
         if not snap:
-            raise GameError(
-                "اسنپ‌شات نابودی برای این بازیکن پیدا نشد.\n"
-                "از دکمه «🗺 تنظیم کشور» در پروفایل، کشور را دستی به او بدهید."
+            # any snapshot at all
+            snap = await self.db.fetchrow(
+                """
+                SELECT * FROM ng_destroy_snapshots
+                WHERE player_id=$1
+                ORDER BY id DESC LIMIT 1
+                """,
+                (target_id,),
             )
-        code = str(snap["country_code"]).upper()
+        if not snap:
+            raise GameError(
+                "اسنپ‌شات نابودی برای این بازیکن پیدا نشد."
+                + chr(10)
+                + "از «🗺 تنظیم کشور» یک کشور آزاد به او بدهید."
+            )
+        code = str(snap["country_code"]).strip()
         inv_list = []
         try:
             inv_list = json.loads(snap.get("inventory_json") or "[]")
+            if not isinstance(inv_list, list):
+                inv_list = []
         except Exception:
             inv_list = []
         treasury = float(snap.get("treasury") or 0)
@@ -7423,26 +7440,30 @@ class Game:
 
         async with self.db.transaction() as tx:
             c = await tx.fetchrow(
-                "SELECT * FROM ng_countries WHERE country_code=$1", (code,)
+                "SELECT * FROM ng_countries WHERE UPPER(country_code)=$1",
+                (code.upper(),),
             )
             if not c:
                 raise GameError(f"کشور اسنپ‌شات ({code}) در دیتابیس نیست")
+            code = str(c["country_code"])
             owner = c.get("owner_player_id")
-            if owner and int(owner) != target_id:
+            if owner is not None and str(owner).strip() != "" and int(owner) != target_id:
                 raise GameError(
-                    f"کشور الان بازیکن دیگری دارد (id={owner}) و قابل ریکاوری نیست.\n"
-                    "از «تنظیم کشور» یک کشور آزاد انتخاب کنید."
+                    f"کشور الان بازیکن دیگری دارد (id={owner})."
+                    + chr(10)
+                    + "از «تنظیم کشور» یک کشور آزاد انتخاب کنید."
                 )
             await tx.execute(
                 """
                 UPDATE ng_countries
                 SET owner_player_id=$1, treasury=$2, hp=$3, max_hp=$4,
                     is_destroyed=0, claimed_at=$5
-                WHERE country_code=$6
+                WHERE UPPER(country_code)=$6
                 """,
-                (int(target_id), treasury, full_hp, max_hp, now, code),
+                (target_id, treasury, full_hp, max_hp, now, code.upper()),
             )
             await tx.execute("DELETE FROM ng_inventory WHERE country_code=$1", (code,))
+            restored = 0
             for it in inv_list:
                 try:
                     qty = float(it.get("quantity") or 0)
@@ -7453,8 +7474,9 @@ class Game:
                         "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
                         (code, ic, qty),
                     )
+                    restored += 1
                 except Exception:
-                    log.exception("recover inv item")
+                    log.exception("recover inv item %s", it)
             await tx.execute(
                 """
                 UPDATE ng_players
@@ -7475,69 +7497,107 @@ class Game:
             except Exception:
                 log.exception("mark snapshot recovered")
 
+        # unlock hardcore outside txn
         try:
             await self.clear_hardcore_lock(target_id)
         except Exception:
             log.exception("clear hardcore on recover")
-        label = await self.country_label(code)
-        await self.admin_log(
-            actor, "destroy_recover",
-            f"target={target_id} country={code} hp={int(full_hp)} treasury={int(treasury)}",
+        try:
+            await self.db.execute(
+                "UPDATE ng_players SET hardcore_dead=0 WHERE player_id=$1",
+                (target_id,),
+            )
+        except Exception:
+            pass
+        try:
+            await self.set_player_cash(target_id, max(float(await self.get_player_cash(target_id) or 0), treasury))
+        except Exception:
+            log.exception("recover cash")
+        # verify restore
+        v = await self.db.fetchrow(
+            "SELECT owner_player_id, hp, treasury FROM ng_countries WHERE UPPER(country_code)=$1",
+            (code.upper(),),
         )
+        if not v or int(v.get("owner_player_id") or 0) != target_id:
+            raise GameError("ریکاوری در دیتابیس ثبت نشد — دوباره تلاش کنید")
+        inv_n = await self.db.fetchrow(
+            "SELECT COUNT(*) AS n FROM ng_inventory WHERE country_code=$1 AND quantity>0",
+            (code,),
+        )
+        try:
+            await self.admin_log(
+                int(actor), "destroy_recover",
+                f"target={target_id} country={code} hp={int(full_hp)} treasury={int(treasury)}",
+            )
+        except Exception:
+            pass
+        label = await self.country_label(code)
         return (
-            f"✅ ریکاوری کامل انجام شد.\n"
-            f"بازیکن: {target_id}\n"
-            f"کشور: {label}\n"
-            f"خزانه: {int(treasury):,} تومان\n"
-            f"تجهیزات: {len(inv_list)} نوع\n"
-            f"HP: {int(full_hp)}/{int(max_hp)}"
+            f"✅ ریکاوری کامل انجام شد."
+            + chr(10)
+            + f"بازیکن: {target_id}"
+            + chr(10)
+            + f"کشور: {label}"
+            + chr(10)
+            + f"خزانه: {int(float(v.get('treasury') or treasury)):,} تومان"
+            + chr(10)
+            + f"تجهیزات بازیابی‌شده: {int((inv_n or {}).get('n') or 0)} نوع"
+            + chr(10)
+            + f"HP: {int(float(v.get('hp') or full_hp))}/{int(max_hp)}"
+            + chr(10)
+            + "قفل هاردکور برداشته شد."
         )
 
     async def admin_assign_country(self, actor: int, target_id: int, country_code: str) -> str:
-        """Owner forces a free country onto a player (manual set)."""
+        """Owner assigns any free country to a player. Works in hardcore; clears locks."""
         if not self.is_owner(int(actor)):
             raise GameError("فقط مالک")
         target_id = int(target_id)
-        code = str(country_code or "").strip().upper()
-        if not code:
-            raise GameError("کد کشور نامعتبر")
-        if self.is_un_country(code):
-            raise GameError("کشور سازمان ملل قابل تخصیص دستی نیست")
+        code_in = str(country_code or "").strip().upper()
+        if not code_in:
+            raise GameError("کد کشور خالی است")
         p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (target_id,))
         if not p:
             raise GameError("بازیکن یافت نشد")
-        c = await self.db.fetchrow("SELECT * FROM ng_countries WHERE country_code=$1", (code,))
+        c = await self.db.fetchrow(
+            "SELECT * FROM ng_countries WHERE UPPER(country_code)=$1", (code_in,)
+        )
         if not c:
-            # try case-insensitive match
-            c = await self.db.fetchrow(
-                "SELECT * FROM ng_countries WHERE UPPER(country_code)=$1", (code,)
-            )
-            if c:
-                code = str(c["country_code"])
-            else:
-                raise GameError(f"کشور «{code}» یافت نشد")
+            raise GameError(f"کشور «{code_in}» یافت نشد")
+        code = str(c["country_code"])
         owner = c.get("owner_player_id")
         if owner is not None and str(owner).strip() != "" and int(owner) != target_id:
             raise GameError(f"این کشور الان بازیکن دیگری دارد (id={owner})")
-        live = await self.resolve_country_for_player(target_id)
+        # free any other country still bound to this player
+        live = None
+        try:
+            live = await self.resolve_country_for_player(target_id)
+        except Exception:
+            live = p.get("country_code")
         now = datetime.now(timezone.utc).isoformat()
         max_hp = float(c.get("max_hp") or 1000) or 1000.0
         hp = float(c.get("hp") or 0)
         if hp <= 0 or int(c.get("is_destroyed") or 0) == 1:
             hp = max_hp
         async with self.db.transaction() as tx:
+            # detach other owned countries
+            await tx.execute(
+                """
+                UPDATE ng_countries
+                SET owner_player_id=NULL, claimed_at=NULL
+                WHERE owner_player_id=$1 AND UPPER(country_code)<>$2
+                """,
+                (target_id, code.upper()),
+            )
             if live and str(live).upper() != code.upper():
-                try:
-                    await tx.execute(
-                        """
-                        UPDATE ng_countries
-                        SET owner_player_id=NULL
-                        WHERE UPPER(country_code)=$1 AND owner_player_id=$2
-                        """,
-                        (str(live).upper(), target_id),
-                    )
-                except Exception:
-                    log.exception("free previous country")
+                await tx.execute(
+                    """
+                    UPDATE ng_countries
+                    SET owner_player_id=NULL, claimed_at=NULL
+                    WHERE UPPER(country_code)=$1
+                    """,
+                    (str(live).upper(),),
+                )
             await tx.execute(
                 """
                 UPDATE ng_countries
@@ -7554,22 +7614,50 @@ class Game:
                 """,
                 (code, target_id),
             )
-            try:
-                await self.set_player_cash(target_id, float(c.get("treasury") or 0))
-            except Exception:
-                pass
+        # hardcore unlock outside txn
         try:
             await self.clear_hardcore_lock(target_id)
         except Exception:
             log.exception("clear hardcore on assign")
+        try:
+            await self.db.execute(
+                "UPDATE ng_players SET hardcore_dead=0 WHERE player_id=$1",
+                (target_id,),
+            )
+        except Exception:
+            pass
+        # verify
+        verify = await self.db.fetchrow(
+            "SELECT owner_player_id, hp, is_destroyed FROM ng_countries WHERE UPPER(country_code)=$1",
+            (code.upper(),),
+        )
+        prow = await self.db.fetchrow(
+            "SELECT country_code FROM ng_players WHERE player_id=$1", (target_id,)
+        )
+        if not verify or int(verify.get("owner_player_id") or 0) != target_id:
+            raise GameError("تخصیص کشور در دیتابیس ثبت نشد — دوباره تلاش کنید")
+        if not prow or str(prow.get("country_code") or "").upper() != code.upper():
+            await self.db.execute(
+                "UPDATE ng_players SET country_code=$1 WHERE player_id=$2",
+                (code, target_id),
+            )
+        try:
+            await self.admin_log(int(actor), "assign_country", f"{target_id}->{code}")
+        except Exception:
+            pass
         label = await self.country_label(code)
-        await self.admin_log(actor, "assign_country", f"{target_id}->{code}")
         return (
-            f"✅ کشور تنظیم شد." + chr(10)
-            + f"بازیکن: {target_id}" + chr(10)
-            + f"کشور: {label}" + chr(10)
-            + f"کد: {code}" + chr(10)
+            f"✅ کشور تنظیم شد."
+            + chr(10)
+            + f"بازیکن: {target_id}"
+            + chr(10)
+            + f"کشور: {label}"
+            + chr(10)
+            + f"کد: {code}"
+            + chr(10)
             + f"HP: {int(hp)}/{int(max_hp)}"
+            + chr(10)
+            + "قفل هاردکور این بازیکن برداشته شد."
         )
 
     async def list_free_countries_for_assign(self, page: int = 0, page_size: int = 20):

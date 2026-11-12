@@ -4171,34 +4171,35 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 if data.startswith("ng:scgo:") or data.startswith("ng:ousetctygo:"):
                     parts = str(data).split(":")
-                    # ng:scgo:TID:IDX  or  ng:ousetctygo:TID:CODE
+                    # ng:scgo:TID:CODE  (preferred)  or legacy ng:scgo:TID:IDX
                     try:
                         tid = int(parts[2])
                     except Exception:
                         await out("❌ شناسه نامعتبر", force_new=True)
                         return
-                    code = None
-                    if data.startswith("ng:scgo:"):
-                        try:
-                            idx = int(parts[3])
-                        except Exception:
-                            await out("❌ انتخاب نامعتبر", force_new=True)
-                            return
-                        codes = _set_country_cache.get(int(pid)) or []
-                        if idx < 0 or idx >= len(codes):
-                            await out(
-                                "❌ لیست منقضی شده. دوباره «تنظیم کشور» را باز کنید.",
-                                ik([[("🗺 تنظیم کشور", f"ng:ousetcty:{tid}")], [("👤 بازگشت", f"ng:ou:{tid}")]]),
-                                force_new=True,
-                            )
-                            return
-                        code = codes[idx]
-                    else:
-                        code = ":".join(parts[3:]).strip().upper() if len(parts) > 3 else ""
+                    code = ""
+                    if len(parts) > 3:
+                        raw = ":".join(parts[3:]).strip()
+                        if raw.isdigit() and data.startswith("ng:scgo:"):
+                            # legacy index into in-memory cache
+                            idx = int(raw)
+                            codes = _set_country_cache.get(int(pid)) or []
+                            if 0 <= idx < len(codes):
+                                code = codes[idx]
+                            else:
+                                await out(
+                                    "❌ لیست منقضی شده. دوباره «تنظیم کشور» را باز کنید.",
+                                    ik([[("🗺 تنظیم کشور", f"ng:ousetcty:{tid}")], [("👤 بازگشت", f"ng:ou:{tid}")]]),
+                                    force_new=True,
+                                )
+                                return
+                        else:
+                            code = raw.upper()
                     if not code:
                         await out("❌ کد کشور خالی است", force_new=True)
                         return
                     try:
+                        await out("⏳ در حال تنظیم کشور…", force_new=True)
                         msg = await game.admin_assign_country(pid, tid, code)
                         await out(
                             msg,
@@ -4247,7 +4248,13 @@ def register_handlers(bot, app_ctx: dict):
                         name = c.get("name_fa") or c["country_code"]
                         dest = "(نابودشده) " if int(c.get("is_destroyed") or 0) else ""
                         label = f"{flag} {dest}{name}".strip()[:40]
-                        rows.append([(label, f"ng:scgo:{tid}:{i}")])
+                        cc = str(c.get("country_code") or "").upper()
+                        # embed code directly so Railway multi-instance / restart cannot lose selection
+                        cb = f"ng:scgo:{tid}:{cc}"
+                        if len(cb) > 64:
+                            cb = f"ng:scgo:{tid}:{i}"
+                            # keep index fallback in cache
+                        rows.append([(label, cb)])
                     nav = []
                     if page > 0:
                         nav.append(("⬅️ قبلی", f"ng:ousetcty:{tid}:{page-1}"))
@@ -4320,8 +4327,17 @@ def register_handlers(bot, app_ctx: dict):
                     await out("❌ شناسه نامعتبر")
                     return
                 try:
+                    await out("⏳ در حال ریکاوری…", force_new=True)
                     msg = await game.recover_destroyed_player(pid, tid)
-                    await out(msg, ik([[("👤 بازگشت", f"ng:ou:{tid}")], [("🏠 خانه", "ng:home")]]))
+                    await out(
+                        msg,
+                        ik([
+                            [("👤 پروفایل", f"ng:ou:{tid}")],
+                            [("🗺 تنظیم کشور", f"ng:ousetcty:{tid}")],
+                            [("🏠 خانه", "ng:home")],
+                        ]),
+                        force_new=True,
+                    )
                 except GameError as e:
                     await out(f"❌ {e}", ik([[("👤 بازگشت", f"ng:ou:{tid}")]]))
                 except Exception as e:
