@@ -232,6 +232,8 @@ async def reply(msg, text, kb=None):
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+_ALLY_CREATE_LOCK: set[int] = set()
+
 
 def _extract_chat_id(target_msg):
     if target_msg is None:
@@ -2068,45 +2070,80 @@ def register_handlers(bot, app_ctx: dict):
                 )
                 return
             if data == "ng:acreateyes":
-                st = dict(_pending.get(pid) or {})
                 if not code:
                     _pending.pop(pid, None)
                     await out("هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.", main_kb(owner))
                     return
-                name = (st.get("name") or "").strip()
-                if not name or st.get("kind") not in ("ally_confirm", "ally_cap", None) and not st.get("max_members"):
-                    # still try if we have name+members+cap
-                    pass
-                if not name or st.get("max_members") is None or st.get("treasury_cap") is None:
-                    # keep pending if partial so user can restart cleanly
+                # Double-tap / late callback after success: already in alliance
+                try:
+                    mem_now = await game.alliances.member_of(code)
+                except Exception:
+                    mem_now = None
+                if mem_now:
                     _pending.pop(pid, None)
+                    a = await game.alliances.get(mem_now["alliance_id"])
+                    link = ((a or {}).get("group_invite_link") or "").strip()
+                    msg = "✅ اتحاد شما فعال است."
+                    if a:
+                        msg += chr(10) + "نام: " + str(a.get("name") or "")
+                    if link:
+                        msg += chr(10) + chr(10) + "لینک گروه:" + chr(10) + link
+                    await out(msg, main_kb(owner), force_new=True)
+                    return
+                st = dict(_pending.get(pid) or {})
+                if not st:
+                    for k in list(_pending.keys()):
+                        try:
+                            if int(k) == int(pid):
+                                st = dict(_pending.get(k) or {})
+                                break
+                        except Exception:
+                            continue
+                name = (st.get("name") or "").strip()
+                mm_raw = st.get("max_members")
+                tc_raw = st.get("treasury_cap")
+                if not name or mm_raw is None or tc_raw is None:
                     rows = [[("➕ ساخت اتحاد", "ng:acreate")], cancel_row()]
                     await out(
-                        "❌ اطلاعات ساخت ناقص یا منقضی شده.\nدوباره «➕ ساخت اتحاد» را بزنید.",
+                        "❌ اطلاعات ساخت ناقص یا منقضی شده."
+                        + chr(10)
+                        + "دوباره «➕ ساخت اتحاد» را بزنید.",
                         ik(rows),
+                        force_new=True,
                     )
                     return
+                if int(pid) in _ALLY_CREATE_LOCK:
+                    await out("⏳ ساخت اتحاد در حال انجام است؛ لطفاً صبر کنید…", force_new=True)
+                    return
+                _ALLY_CREATE_LOCK.add(int(pid))
                 try:
-                    mm = int(st.get("max_members") or 2)
-                    tc = float(st.get("treasury_cap") or 100_000_000)
+                    mm = int(mm_raw or 2)
+                    tc = float(tc_raw or 100_000_000)
+                    st["kind"] = "ally_confirm"
+                    _pending[pid] = dict(st)
                     msg = await game.alliances.create(pid, code, name, mm, tc, bot=bot)
                     _pending.pop(pid, None)
-                    await out(msg, main_kb(owner))
+                    await out(msg, main_kb(owner), force_new=True)
                 except (AllianceError, GameError) as e:
-                    # keep data so user can fix money and retry
                     st["kind"] = "ally_confirm"
-                    _pending[pid] = st
+                    _pending[pid] = dict(st)
                     rows = [
                         [("✅ تلاش دوباره", "ng:acreateyes")],
                         [("➕ شروع مجدد", "ng:acreate")],
                         cancel_row(),
                     ]
-                    await out(f"❌ ساخت انجام نشد:\n{e}", ik(rows))
-                except Exception as e:
-                    _pending.pop(pid, None)
+                    await out("❌ ساخت انجام نشد:" + chr(10) + str(e), ik(rows), force_new=True)
+                except Exception:
                     log.exception("alliance create")
-                    await out(f"❌ خطای سیستمی ساخت اتحاد.\nدوباره تلاش کنید.", main_kb(owner))
+                    await out(
+                        "❌ خطای سیستمی ساخت اتحاد." + chr(10) + "دوباره تلاش کنید.",
+                        main_kb(owner),
+                        force_new=True,
+                    )
+                finally:
+                    _ALLY_CREATE_LOCK.discard(int(pid))
                 return
+
             if data.startswith("ng:aview:"):
                 aid = int(data.split(":")[-1])
                 a = await game.alliances.get(aid)
