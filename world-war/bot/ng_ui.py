@@ -1005,6 +1005,56 @@ def register_handlers(bot, app_ctx: dict):
                         msg = f"❌ {e}"
                     await reply(message, msg, main_kb(owner))
                     return
+                if kind == "shop_add_qty":
+                    ic = st.get("item")
+                    raw = (text or "").strip().replace(",", "").replace(" ", "")
+                    raw = raw.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+                    try:
+                        qty = float(raw)
+                    except Exception:
+                        await reply(
+                            message,
+                            "فقط یک عدد بین ۱ تا ۲۵۰ بفرست (یا از دکمه‌های ＋ استفاده کن).",
+                            ik([[("🛒 فروشگاه", "ng:shophome")], cancel_row()]),
+                        )
+                        return
+                    if qty <= 0 or qty > 250:
+                        await reply(
+                            message,
+                            "⚠ مقدار باید بین ۱ تا ۲۵۰ باشد.",
+                            ik([[("🛒 فروشگاه", "ng:shophome")], cancel_row()]),
+                        )
+                        return
+                    try:
+                        add_msg = await game.cart_add(pid, ic, qty)
+                    except GameError as e:
+                        await reply(message, f"❌ {e}", main_kb(owner))
+                        return
+                    except Exception as e:
+                        log.exception("shop_add_qty")
+                        await reply(message, f"❌ {e}", main_kb(owner))
+                        return
+                    await _set_pending(game, pid, {"kind": "shop_add_qty", "item": ic})
+                    cart_txt = ""
+                    try:
+                        if code:
+                            cart_txt, _, _ = await game.cart_view(pid, code)
+                    except Exception:
+                        cart_txt = ""
+                    body = str(add_msg)
+                    if cart_txt:
+                        body = body + "\n\n" + cart_txt
+                    await reply(
+                        message,
+                        body,
+                        ik([
+                            [("＋۱", f"ng:add:{ic}:1"), ("＋۵", f"ng:add:{ic}:5"), ("＋۱۰", f"ng:add:{ic}:10")],
+                            [("🛒 سبد", "ng:cart"), ("✅ تسویه", "ng:checkout")],
+                            [("🛒 فروشگاه", "ng:shophome")],
+                            cancel_row(),
+                        ]),
+                    )
+                    return
                 if kind == "mkt_qty":
                     try:
                         st["qty"] = parse_amount(text)
@@ -2703,6 +2753,12 @@ def register_handlers(bot, app_ctx: dict):
                 return
             if data == "ng:shophome":
                 try:
+                    st = await _get_pending(game, pid)
+                    if st and st.get("kind") == "shop_add_qty":
+                        await _set_pending(game, pid, None)
+                except Exception:
+                    pass
+                try:
                     await game.ensure_shop_catalog()
                 except Exception:
                     pass
@@ -2734,19 +2790,32 @@ def register_handlers(bot, app_ctx: dict):
                 price_line = f"قیمت: {int(eff):,}"
                 if disc:
                     price_line += f" (پایه {int(base):,} با تخفیف {int(disc)}٪)"
+                await _set_pending(game, pid, {"kind": "shop_add_qty", "item": ic})
                 rows = [
                     [("＋۱", f"ng:add:{ic}:1"), ("＋۵", f"ng:add:{ic}:5"), ("＋۱۰", f"ng:add:{ic}:10")],
                     [("سبد", "ng:cart"), ("تسویه", "ng:checkout")],
                     back_row(),
                 ]
-                await out(
-                    f"{it.get('name_fa')}\n{it.get('description_fa')}\n{price_line}\n"
-                    f"درآمد روزانه: {int(float(it.get('daily_income') or 0)):,}\n"
-                    f"نگهداری: {int(float(it.get('maintenance') or 0)):,}",
-                    ik(rows),
+                body = (
+                    f"{it.get('name_fa')}"
+                    + "\n"
+                    + f"{it.get('description_fa')}"
+                    + "\n"
+                    + price_line
+                    + "\n"
+                    + f"درآمد روزانه: {int(float(it.get('daily_income') or 0)):,}"
+                    + "\n"
+                    + f"نگهداری: {int(float(it.get('maintenance') or 0)):,}"
+                    + "\n\n"
+                    + "اگر می‌خواهی می‌توانی عدد دلخواهت را از ۱ تا ۲۵۰ همین الان وارد کنی "
+                    + "تا همان تعداد وارد سبد خریدت شود."
+                    + "\n"
+                    + "یا از دکمه‌های ＋۱ / ＋۵ / ＋۱۰ استفاده کن."
                 )
+                await out(body, ik(rows))
                 return
             if data.startswith("ng:add:"):
+
                 _, _, ic, q = data.split(":")
                 try:
                     add_msg = await game.cart_add(pid, ic, float(q))

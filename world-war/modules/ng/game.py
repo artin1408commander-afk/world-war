@@ -144,6 +144,13 @@ class Game:
         try:
             await self.legendary.ensure_tables()
             try:
+                await self.db.execute(
+                    "UPDATE ng_country_control SET base_daily_income=70000000 WHERE COALESCE(base_daily_income,0)<>70000000"
+                )
+            except Exception:
+                log.exception("force_base_daily_70m")
+
+            try:
                 n = await self.legendary.expire_all_active_effects("bootstrap")
                 if n:
                     log.info("cleared %s active legendary effects on startup", n)
@@ -883,17 +890,20 @@ class Game:
         meta = self._cat.get(item) or {}
         if not meta:
             raise GameError("کالا یافت نشد")
-        # max_per_order = max units in ONE button press
-        # cart may stack higher via repeated adds
+        # Custom typed qty and buttons share the same hard cap: 250 per cart line
+        CART_LINE_CAP = 250.0
         max_one = float(meta.get("max_per_order") or 10)
         if max_one < 1:
             max_one = 1
-        cart_cap = max(max_one * 10, 50)
+        cart_cap = CART_LINE_CAP
         try:
             qty = float(qty)
         except (TypeError, ValueError):
             qty = 1.0
-        qty = max(1.0, min(max_one, qty))
+        # Allow 0 (no-op) through typed input; buttons always >=1
+        if qty <= 0:
+            return "⚠ مقدار باید بین ۱ تا ۲۵۰ باشد."
+        qty = max(1.0, min(CART_LINE_CAP, qty))
         row = await self.db.fetchrow(
             "SELECT quantity FROM ng_cart WHERE player_id=$1 AND item_code=$2", (pid, item)
         )
