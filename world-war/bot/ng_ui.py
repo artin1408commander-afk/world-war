@@ -1006,7 +1006,17 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "shop_add_qty":
-                    ic = st.get("item")
+                    ic = st.get("item") or st.get("item_code")
+                    if not ic and isinstance(st.get("data"), dict):
+                        ic = st["data"].get("item")
+                    if not ic:
+                        await _clear_pending(game, pid)
+                        await reply(
+                            message,
+                            "نشست خرید منقضی شد. دوباره کالا را از فروشگاه انتخاب کنید.",
+                            ik([[("🛒 فروشگاه", "ng:shophome")]]),
+                        )
+                        return
                     raw = (text or "").strip().replace(",", "").replace(" ", "")
                     raw = raw.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
                     try:
@@ -1034,7 +1044,7 @@ def register_handlers(bot, app_ctx: dict):
                         log.exception("shop_add_qty")
                         await reply(message, f"❌ {e}", main_kb(owner))
                         return
-                    await _set_pending(game, pid, {"kind": "shop_add_qty", "item": ic})
+                    await _set_pending(game, pid, "shop_add_qty", item=ic)
                     cart_txt = ""
                     try:
                         if code:
@@ -2755,7 +2765,7 @@ def register_handlers(bot, app_ctx: dict):
                 try:
                     st = await _get_pending(game, pid)
                     if st and st.get("kind") == "shop_add_qty":
-                        await _set_pending(game, pid, None)
+                        await _clear_pending(game, pid)
                 except Exception:
                     pass
                 try:
@@ -2790,7 +2800,7 @@ def register_handlers(bot, app_ctx: dict):
                 price_line = f"قیمت: {int(eff):,}"
                 if disc:
                     price_line += f" (پایه {int(base):,} با تخفیف {int(disc)}٪)"
-                await _set_pending(game, pid, {"kind": "shop_add_qty", "item": ic})
+                await _set_pending(game, pid, "shop_add_qty", item=ic)
                 rows = [
                     [("＋۱", f"ng:add:{ic}:1"), ("＋۵", f"ng:add:{ic}:5"), ("＋۱۰", f"ng:add:{ic}:10")],
                     [("سبد", "ng:cart"), ("تسویه", "ng:checkout")],
@@ -2815,8 +2825,15 @@ def register_handlers(bot, app_ctx: dict):
                 await out(body, ik(rows))
                 return
             if data.startswith("ng:add:"):
-
-                _, _, ic, q = data.split(":")
+                parts = data.split(":")
+                if len(parts) < 4:
+                    await out("دکمه نامعتبر است. دوباره کالا را از فروشگاه باز کنید.", force_new=True)
+                    return
+                ic, q = parts[2], parts[3]
+                try:
+                    await _set_pending(game, pid, "shop_add_qty", item=ic)
+                except Exception:
+                    log.exception("set shop pending on add")
                 try:
                     add_msg = await game.cart_add(pid, ic, float(q))
                 except GameError as e:
