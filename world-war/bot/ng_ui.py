@@ -644,7 +644,8 @@ def register_handlers(bot, app_ctx: dict):
                     [("جنگ باز", "ng:owar:1"), ("جنگ بسته", "ng:owar:0")],
                     [("🔒 قطع خرید", "ng:oshop:1"), ("🔓 آزاد خرید", "ng:oshop:0")],
                     [("هسته‌ای فعال", "ng:onuke:1"), ("هسته‌ای خاموش", "ng:onuke:0")],
-                    [("⏱ کول‌داون حمله ۳۰ث + اتم ۶۰ث", "ng:ocdstd")],
+                    [("⏱ کول‌داون ۳۰ث + اتم ۶۰ث", "ng:ocdstd")],
+                    [("⚡ فقط حمله ۳۰ث", "ng:ocd:30")],
                     [("⏱ کول‌داون ۲د", "ng:ocd:120"), ("⏱ کول‌داون ۵د", "ng:ocd:300")],
                     [("بیانیه‌ها", "ng:ostmt"), ("درخواست‌های NPT", "ng:onpt")],
                     [("📜 قوانین در انتظار", "ng:olaws")],
@@ -1969,6 +1970,69 @@ def register_handlers(bot, app_ctx: dict):
                 # All gameplay requires forced membership when enabled
                 if not owner and not await require_membership(pid, cq, True):
                     return
+
+            # ---- cooldown owner controls (early, high priority) ----
+            if data == "ng:ocdstd" or data == "ng:ocd:30" or data == "ng:ocd30":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    msg = await game.apply_standard_war_cooldowns(pid)
+                    a = await game.attack_cooldown_sec()
+                    n = await game.nuke_cooldown_sec()
+                    await out(
+                        msg
+                        + chr(10)
+                        + chr(10)
+                        + f"خوانده‌شده از دیتابیس: حمله={a}ث | اتم={n}ث",
+                        force_new=True,
+                    )
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("ocdstd")
+                    await out(f"❌ خطا در تنظیم کول‌داون: {e}", force_new=True)
+                return
+            if data.startswith("ng:oucd30on:") or data.startswith("ng:oucd30off:") or data.startswith("ng:oucd30:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    tid = int(str(data).split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                if data.startswith("ng:oucd30off:"):
+                    enable = False
+                elif data.startswith("ng:oucd30on:"):
+                    enable = True
+                else:
+                    # toggle
+                    try:
+                        enable = not await game.has_fast_attack_cd(tid)
+                    except Exception:
+                        enable = True
+                try:
+                    msg = await game.set_fast_attack_cd(pid, tid, enable)
+                    on = await game.has_fast_attack_cd(tid)
+                    status = "⚡ فعال (۳۰ث)" if on else "⏱ عادی جهان"
+                    rows = [
+                        [("⚡ روشن ۳۰ث", f"ng:oucd30on:{tid}"), ("🕊 خاموش", f"ng:oucd30off:{tid}")],
+                        [("👤 بازگشت پروفایل", f"ng:ou:{tid}")],
+                        [("🏠 خانه", "ng:home")],
+                    ]
+                    await out(
+                        msg + chr(10) + chr(10) + f"وضعیت فعلی: {status}",
+                        ik(rows),
+                        force_new=True,
+                    )
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("oucd30 toggle")
+                    await out(f"❌ خطا در کول‌داون ۳۰ث: {e}", force_new=True)
+                return
+
 
             if data in ("ng:home", "ng:busy", "ng:cancel"):
                 await _clear_pending(game, pid)
@@ -4265,25 +4329,25 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ خطا در ریکاوری: {e}")
                 return
 
-            if data == "ng:ocdstd":
+            if data.startswith("ng:ocd:"):
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
                     return
                 try:
-                    msg = await game.apply_standard_war_cooldowns(pid)
-                    await out(msg, force_new=True)
-                except GameError as e:
-                    await out(f"❌ {e}", force_new=True)
-                except Exception as e:
-                    log.exception("ocdstd")
-                    await out(f"❌ {e}", force_new=True)
-                return
-            if data.startswith("ng:ocd:"):
-                try:
                     sec = int(data.split(":")[-1])
-                    await out(await game.set_attack_cooldown_sec(pid, sec))
+                    msg = await game.set_attack_cooldown_sec(pid, sec)
+                    # if 30 requested, also set nuke to 60 for consistency when using std preset buttons
+                    if sec == 30:
+                        try:
+                            await game.set_nuke_cooldown_sec(pid, 60)
+                            msg += chr(10) + "✅ کول‌داون اتمی هم ۶۰ث شد."
+                        except Exception:
+                            pass
+                    got = await game.attack_cooldown_sec()
+                    await out(msg + chr(10) + f"مقدار ذخیره‌شده: {got} ثانیه", force_new=True)
                 except Exception as e:
-                    await out(f"❌ {e}")
+                    log.exception("ocd set")
+                    await out(f"❌ {e}", force_new=True)
                 return
             if data == "ng:oshop" or data.startswith("ng:oshop:"):
                 if not owner:
@@ -4953,9 +5017,9 @@ def register_handlers(bot, app_ctx: dict):
                     log.exception("has_fast_attack_cd profile")
                     fast_on = False
                 cd_row = (
-                    [("⚡ CD30 روشن — خاموش کن", f"ng:oucd30off:{tid}")]
+                    [("🕊 خاموش کردن CD30", f"ng:oucd30off:{tid}")]
                     if fast_on
-                    else [("⚡ CD30 خاموش — روشن کن", f"ng:oucd30on:{tid}")]
+                    else [("⚡ روشن کردن CD30", f"ng:oucd30on:{tid}")]
                 )
                 return [
                     [("🚫 بن", f"ng:ouban:{tid}"), ("✅ آن‌بن", f"ng:ouunban:{tid}")],
@@ -4976,32 +5040,6 @@ def register_handlers(bot, app_ctx: dict):
                     [("⬅️ لیست کاربران", "ng:o:players:0")],
                 ]
 
-            if data.startswith("ng:oucd30on:") or data.startswith("ng:oucd30off:"):
-                if not owner:
-                    await out("❌ فقط مالک", force_new=True)
-                    return
-                try:
-                    tid = int(str(data).split(":")[-1])
-                except Exception:
-                    await out("❌ شناسه نامعتبر", force_new=True)
-                    return
-                enable = data.startswith("ng:oucd30on:")
-                try:
-                    await game.ensure_player_flags_table()
-                    msg = await game.set_fast_attack_cd(pid, tid, enable)
-                    try:
-                        card = await game.player_admin_card(tid)
-                    except Exception:
-                        log.exception("profile after cd toggle")
-                        card = ""
-                    body = msg if not card else (msg + chr(10) + chr(10) + card)
-                    await out(body, ik(await _owner_player_profile_kb(tid)), force_new=True)
-                except GameError as e:
-                    await out(f"❌ {e}", force_new=True)
-                except Exception as e:
-                    log.exception("oucd30 toggle")
-                    await out(f"❌ خطا در کول‌داون ۳۰ث: {e}", force_new=True)
-                return
 
             if data.startswith("ng:ou:"):
                 if not owner:

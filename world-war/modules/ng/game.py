@@ -1578,35 +1578,73 @@ class Game:
             return False
 
     async def set_fast_attack_cd(self, actor: int, target_player_id: int, enabled: bool) -> str:
-        if not self.is_owner(actor):
+        if not self.is_owner(int(actor)):
             raise GameError("فقط مالک")
         tid = int(target_player_id)
         p = await self.db.fetchrow("SELECT player_id FROM ng_players WHERE player_id=$1", (tid,))
         if not p:
-            raise GameError("بازیکن یافت نشد")
+            # still allow flag even if player row missing
+            log.warning("set_fast_attack_cd: player %s not in ng_players — still writing flag", tid)
         await self.ensure_player_flags_table()
         flag = 1 if enabled else 0
-        exists = await self.db.fetchrow(
-            "SELECT player_id FROM ng_player_flags WHERE player_id=$1", (tid,)
-        )
-        if exists:
+        # Ensure column exists (PostgreSQL)
+        try:
             await self.db.execute(
-                "UPDATE ng_player_flags SET fast_attack_cd=$1 WHERE player_id=$2",
-                (flag, tid),
+                "ALTER TABLE ng_player_flags ADD COLUMN IF NOT EXISTS fast_attack_cd INTEGER NOT NULL DEFAULT 0"
             )
-        else:
+        except Exception:
+            try:
+                await self.db.execute(
+                    "ALTER TABLE ng_player_flags ADD COLUMN fast_attack_cd INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass
+        try:
+            exists = await self.db.fetchrow(
+                "SELECT player_id FROM ng_player_flags WHERE player_id=$1", (tid,)
+            )
+            if exists:
+                await self.db.execute(
+                    "UPDATE ng_player_flags SET fast_attack_cd=$1 WHERE player_id=$2",
+                    (flag, tid),
+                )
+            else:
+                await self.db.execute(
+                    "INSERT INTO ng_player_flags (player_id, fast_attack_cd) VALUES ($1,$2)",
+                    (tid, flag),
+                )
+        except Exception as e:
+            log.exception("set_fast_attack_cd write")
+            raise GameError(f"ذخیره کول‌داون ۳۰ث ناموفق: {e}") from e
+        # verify
+        ok = await self.has_fast_attack_cd(tid)
+        if bool(ok) != bool(enabled):
+            # last resort rewrite
+            await self.db.execute(
+                "DELETE FROM ng_player_flags WHERE player_id=$1", (tid,)
+            )
             await self.db.execute(
                 "INSERT INTO ng_player_flags (player_id, fast_attack_cd) VALUES ($1,$2)",
                 (tid, flag),
             )
-        await self.admin_log(actor, "fast_attack_cd", f"{tid}={'on' if enabled else 'off'}")
+            ok = await self.has_fast_attack_cd(tid)
+        if bool(ok) != bool(enabled):
+            raise GameError("ذخیره انجام شد اما خواندن وضعیت ناموفق بود — دوباره تلاش کنید")
+        try:
+            await self.admin_log(int(actor), "fast_attack_cd", f"{tid}={'on' if enabled else 'off'}")
+        except Exception:
+            pass
         if enabled:
             return (
-                f"✅ کول‌داون سریع ۳۰ ثانیه‌ای برای بازیکن {tid} روشن شد."
+                f"✅ کول‌داون ۳۰ ثانیه‌ای برای بازیکن {tid} روشن شد و ذخیره شد."
                 + chr(10)
-                + "حملات عادی و اتمی این بازیکن بعد از هر حمله فقط ۳۰ ثانیه صبر نیاز دارند."
+                + "حمله عادی و اتمی این بازیکن فقط ۳۰ ثانیه صبر می‌خواهد."
             )
-        return f"✅ کول‌داون سریع ۳۰ ثانیه‌ای برای بازیکن {tid} خاموش شد (کول‌داون عادی جهان)."
+        return (
+            f"✅ کول‌داون ۳۰ ثانیه‌ای برای بازیکن {tid} خاموش شد."
+            + chr(10)
+            + "از این به بعد کول‌داون عادی جهان اعمال می‌شود."
+        )
 
     # ---------- inactivity purge (3 days) + hardcore ----------
     INACTIVE_DAYS = 3
@@ -5993,9 +6031,13 @@ class Game:
                     if last.tzinfo is None:
                         last = last.replace(tzinfo=timezone.utc)
                     elapsed = (now - last).total_seconds()
-                    # nuclear uses dedicated nuke cooldown (default 60s)
+                    # nuclear: 60s default, or 30s if owner enabled fast CD for this player
                     need_cd = await self.nuke_cooldown_sec()
-                    # UN/hacker free_atk already skipped this block
+                    try:
+                        if await self.has_fast_attack_cd(int(pid)):
+                            need_cd = int(self.PLAYER_FAST_ATTACK_CD_SEC)
+                    except Exception:
+                        pass
                     if elapsed < need_cd:
                         raise GameError(
                             f"محدودیت حمله اتمی: {int(need_cd - elapsed)} ثانیه دیگر صبر کنید."
