@@ -3224,7 +3224,7 @@ def register_handlers(bot, app_ctx: dict):
                 defs = await game.legendary.list_defs()
                 rows = []
                 for d in defs:
-                    uses = int(d.get("uses_per_unit") or 20)
+                    uses = int(d.get("uses_per_unit") or 1)
                     rows.append([(
                         f"{d['name_fa']} | {int(float(d['price'])):,}ت | {uses}بار",
                         f"ng:olegcfg:{d['item_code']}",
@@ -3242,7 +3242,7 @@ def register_handlers(bot, app_ctx: dict):
                 if not d:
                     await out("آیتم یافت نشد")
                     return
-                uses = int(d.get("uses_per_unit") or 20)
+                uses = int(d.get("uses_per_unit") or 1)
                 await out(
                     f"🎁 {d['name_fa']}" + "\n"
                     + f"قیمت فعلی: {int(float(d['price'])):,} تومان" + "\n"
@@ -3274,7 +3274,7 @@ def register_handlers(bot, app_ctx: dict):
                 if not d:
                     await out("آیتم یافت نشد")
                     return
-                uses = int(d.get("uses_per_unit") or 20)
+                uses = int(d.get("uses_per_unit") or 1)
                 _pending[pid] = {"kind": "owner_leg_uses", "item": ic}
                 await out(
                     f"تعداد استفاده فعلی {d['name_fa']}: {uses} بار" + "\n"

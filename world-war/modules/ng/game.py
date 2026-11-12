@@ -143,6 +143,12 @@ class Game:
             pass
         try:
             await self.legendary.ensure_tables()
+            try:
+                n = await self.legendary.expire_all_active_effects("bootstrap")
+                if n:
+                    log.info("cleared %s active legendary effects on startup", n)
+            except Exception:
+                log.exception("expire legendary on bootstrap")
         except Exception:
             log.exception("legendary ensure")
         try:

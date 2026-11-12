@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
-USES_PER_UNIT = 20
+USES_PER_UNIT = 1
 
 # Default catalog (prices overridable in DB)
 LEGENDARY_DEFS = [
@@ -48,10 +48,10 @@ LEGENDARY_DEFS = [
         "item_code": "leg_military_card",
         "name_fa": "کارت پایان خدمت مهدی جهان 🎖️",
         "description_fa": "معافیت اضطراری در برابر حملات.",
-        "power_fa": "کشور شما ۱۵ دقیقه در برابر حملات مصون است.",
+        "power_fa": "کشور شما ۵ دقیقه در برابر حملات مصون است.",
         "effect_type": "attack_immunity",
         "target_mode": "self",
-        "duration_sec": 900,
+        "duration_sec": 300,
         "price": 5000,
         "image_path": "assets/legendary/military_card.png",
     },
@@ -59,10 +59,10 @@ LEGENDARY_DEFS = [
         "item_code": "leg_femboy",
         "name_fa": "فمبوی 🎀",
         "description_fa": "ممنوعیت استفاده از بمب اتم برای هدف.",
-        "power_fa": "کشور هدف ۱۵ دقیقه نمی‌تواند از بمب اتم استفاده کند.",
+        "power_fa": "کشور هدف ۵ دقیقه نمی‌تواند از بمب اتم استفاده کند.",
         "effect_type": "nuke_ban",
         "target_mode": "other",
-        "duration_sec": 900,
+        "duration_sec": 300,
         "price": 4500,
         "image_path": "assets/legendary/femboy.png",
     },
@@ -88,7 +88,7 @@ class LegendaryService:
                 effect_type TEXT NOT NULL,
                 target_mode TEXT NOT NULL DEFAULT 'other',
                 duration_sec INTEGER NOT NULL DEFAULT 0,
-                uses_per_unit INTEGER NOT NULL DEFAULT 20,
+                uses_per_unit INTEGER NOT NULL DEFAULT 1,
                 price REAL NOT NULL DEFAULT 2000,
                 image_path TEXT,
                 active INTEGER NOT NULL DEFAULT 1
@@ -154,6 +154,7 @@ class LegendaryService:
             except Exception:
                 pass
         await self._seed_defs()
+        await self.force_one_use_rules()
 
     async def _seed_defs(self) -> None:
         for d in LEGENDARY_DEFS:
@@ -189,6 +190,76 @@ class LegendaryService:
                         d["image_path"],
                     ),
                 )
+
+    async def force_one_use_rules(self) -> None:
+        """Each unit is 1-use; timed effects last 5 minutes; existing stacks capped."""
+        try:
+            await self.db.execute(
+                "UPDATE ng_legendary_defs SET uses_per_unit=1 WHERE COALESCE(uses_per_unit,0)<>1"
+            )
+        except Exception:
+            log.exception("force uses_per_unit=1")
+        try:
+            await self.db.execute(
+                """
+                UPDATE ng_legendary_defs
+                SET duration_sec=300,
+                    power_fa=CASE effect_type
+                        WHEN 'attack_immunity' THEN 'کشور شما ۵ دقیقه در برابر حملات مصون است.'
+                        WHEN 'nuke_ban' THEN 'کشور هدف ۵ دقیقه نمی‌تواند از بمب اتم استفاده کند.'
+                        WHEN 'sleep_paralysis' THEN 'کشور هدف ۵ دقیقه نمی‌تواند خرید یا حمله کند.'
+                        ELSE power_fa
+                    END
+                WHERE effect_type IN ('attack_immunity','nuke_ban','sleep_paralysis')
+                """
+            )
+        except Exception:
+            log.exception("force duration 5m")
+        try:
+            await self.db.execute(
+                "UPDATE ng_player_legendary SET uses_left=1 WHERE uses_left>1"
+            )
+        except Exception:
+            log.exception("cap uses_left")
+
+    async def expire_all_active_effects(self, reason: str = "restart") -> int:
+        """End every active legendary effect immediately (used on bot startup)."""
+        now = datetime.now(timezone.utc).isoformat()
+        n = 0
+        try:
+            # timed effects still running
+            rows = await self.db.fetch(
+                """
+                SELECT id FROM ng_legendary_effects
+                WHERE ends_at IS NOT NULL AND ends_at > $1
+                """,
+                (now,),
+            )
+            for r in rows or []:
+                await self.db.execute(
+                    "UPDATE ng_legendary_effects SET ends_at=$1 WHERE id=$2",
+                    (now, int(r["id"])),
+                )
+                n += 1
+            # pending income modifiers not yet applied
+            rows2 = await self.db.fetch(
+                """
+                SELECT id FROM ng_legendary_effects
+                WHERE ends_at IS NULL AND COALESCE(income_applied,0)=0
+                  AND effect_type IN ('income_cut','income_boost')
+                """
+            )
+            for r in rows2 or []:
+                await self.db.execute(
+                    "UPDATE ng_legendary_effects SET income_applied=1, ends_at=$1 WHERE id=$2",
+                    (now, int(r["id"])),
+                )
+                n += 1
+            if n:
+                log.info("legendary effects expired on %s: %s", reason, n)
+        except Exception:
+            log.exception("expire_all_active_effects")
+        return n
 
     # ---- wallet ----
     async def get_wallet(self, pid: int) -> float:
@@ -647,9 +718,9 @@ class LegendaryService:
             elif et == "sleep_paralysis":
                 ends = (now + timedelta(seconds=int(d["duration_sec"] or 300))).isoformat()
             elif et == "attack_immunity":
-                ends = (now + timedelta(seconds=int(d["duration_sec"] or 900))).isoformat()
+                ends = (now + timedelta(seconds=int(d["duration_sec"] or 300))).isoformat()
             elif et == "nuke_ban":
-                ends = (now + timedelta(seconds=int(d["duration_sec"] or 900))).isoformat()
+                ends = (now + timedelta(seconds=int(d["duration_sec"] or 300))).isoformat()
             else:
                 raise LegendaryError(f"نوع اثر پشتیبانی نمی‌شود: {et}")
 
