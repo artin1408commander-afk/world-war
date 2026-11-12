@@ -544,7 +544,8 @@ def register_handlers(bot, app_ctx: dict):
                 rows += [
                     [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
                     [("🌐 مدیریت اتحادها", "ng:oally"), ("📊 آمار دعوت", "ng:orefstats")],
-                    [("💵 پول همگانی", "ng:ogiveall"), ("💰 پرداخت درآمد روزانه", "ng:odaily")],
+                    [("💵 پول همگانی", "ng:ogiveall"), ("❤️ جون همگانی", "ng:ohpall")],
+                    [("💰 پرداخت درآمد روزانه", "ng:odaily")],
                     [("جنگ باز", "ng:owar:1"), ("جنگ بسته", "ng:owar:0")],
                     [("🔒 قطع خرید", "ng:oshop:1"), ("🔓 آزاد خرید", "ng:oshop:0")],
                     [("هسته‌ای فعال", "ng:onuke:1"), ("هسته‌ای خاموش", "ng:onuke:0")],
@@ -565,7 +566,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("💎 حمایت مالی", "ng:odonate")],
                     [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
                     [("🏷 قیمت فروشگاه", "ng:oprices"), ("🏷 تخفیف فروشگاه", "ng:odiscount")],
-                    [("☠️ هاردکور روشن/خاموش", "ng:ohardcore")],
+                    [("☠️ هاردکور روشن", "ng:ohardcore:1"), ("🕊 هاردکور خاموش", "ng:ohardcore:0")],
                     [("🔴 ریست کامل جهان", "ng:oreset1")],
                 ]
                 await reply(message, str(summary) + chr(10) + chr(10) + "دستورات: /admin /owner /panel", ik(rows))
@@ -929,6 +930,18 @@ def register_handlers(bot, app_ctx: dict):
                     except GameError as e:
                         msg = f"❌ {e}"
                     await reply(message, msg, main_kb(owner))
+                    return
+                if kind == "owner_hp_all":
+                    try:
+                        amount = game.parse_money_amount(text)
+                        msg = await game.admin_adjust_hp_all(pid, amount)
+                        _pending.pop(pid, None)
+                        await reply(message, msg, main_kb(owner))
+                    except GameError as e:
+                        await reply(message, f"❌ {e}")
+                    except Exception:
+                        log.exception("owner_hp_all")
+                        await reply(message, "❌ خطا در جون همگانی")
                     return
                 if kind == "owner_give_all":
                     try:
@@ -3530,14 +3543,19 @@ def register_handlers(bot, app_ctx: dict):
                 except GameError as e:
                     await out(f"❌ {e}")
                 return
-            if data == "ng:ohardcore":
+            if data == "ng:ohardcore" or data.startswith("ng:ohardcore:"):
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
                     return
                 try:
-                    cur = await game.is_hardcore_mode()
-                    msg = await game.set_hardcore_mode(pid, not cur)
+                    if data.startswith("ng:ohardcore:"):
+                        en = data.endswith(":1")
+                    else:
+                        en = not await game.is_hardcore_mode()
+                    msg = await game.set_hardcore_mode(pid, en)
                     await out(msg, force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
                 except Exception as e:
                     log.exception("ohardcore")
                     await out(f"❌ {e}", force_new=True)
@@ -3981,6 +3999,22 @@ def register_handlers(bot, app_ctx: dict):
                 _pending[pid] = {"kind": "unban_user"}
                 await out("آیدی عددی یا @username برای رفع بن:")
                 return
+            if data == "ng:ohpall":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                _pending[pid] = {"kind": "owner_hp_all"}
+                await out(
+                    "❤️ جون همگانی" + chr(10)
+                    + "مقدار تغییر HP برای همه کشورهای بازیکن را بنویسید:" + chr(10) + chr(10)
+                    + "مثال افزایش: 100 یا +100" + chr(10)
+                    + "مثال کاهش: -100" + chr(10) + chr(10)
+                    + "بدون سقف برای افزایش (max_hp در صورت نیاز بالا می‌رود).",
+                    ik([cancel_row()]),
+                    force_new=True,
+                )
+                return
+
             if data == "ng:ogiveall":
                 _pending[pid] = {"kind": "owner_give_all"}
                 await out(
@@ -4440,7 +4474,8 @@ def register_handlers(bot, app_ctx: dict):
                     [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
                     [(hc_label, "ng:ohardcore")],
                     [("🔒 قطع/فعال خرید فروشگاه", "ng:oshop")],
-                    [("💵 پول همگانی", "ng:ogiveall"), ("💰 پرداخت درآمد روزانه", "ng:odaily")],
+                    [("💵 پول همگانی", "ng:ogiveall"), ("❤️ جون همگانی", "ng:ohpall")],
+                    [("💰 پرداخت درآمد روزانه", "ng:odaily")],
                     [("❤️ دیدن HP ها", "ng:ohp"), ("🏅 رنکینگ", "ng:orank")],
                     [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
                     [("🎁 مدیریت لجندری", "ng:oleg"), ("💰 شارژ کیف پول", "ng:owallet")],
