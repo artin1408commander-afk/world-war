@@ -107,6 +107,12 @@ class Game:
             "ALTER TABLE world_meta ADD COLUMN last_daily_date TEXT",
             "ALTER TABLE world_meta ADD COLUMN main_group_id TEXT",
             "ALTER TABLE world_meta ADD COLUMN log_group_id TEXT",
+            """CREATE TABLE IF NOT EXISTS ng_user_pending (
+                player_id BIGINT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                data_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )""",
             """CREATE TABLE IF NOT EXISTS ng_defense_hits (
                 country_code TEXT PRIMARY KEY,
                 hits INTEGER NOT NULL DEFAULT 0,
@@ -4084,6 +4090,81 @@ class Game:
         return "✅ تجهیزات برداشت شد."
 
 
+
+    async def set_user_pending(self, pid: int, kind: str, data: dict | None = None) -> None:
+        pid = int(pid)
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(data or {}, ensure_ascii=False)
+        try:
+            row = await self.db.fetchrow(
+                "SELECT player_id FROM ng_user_pending WHERE player_id=$1", (pid,)
+            )
+            if row:
+                await self.db.execute(
+                    "UPDATE ng_user_pending SET kind=$1, data_json=$2, created_at=$3 WHERE player_id=$4",
+                    (kind, payload, now, pid),
+                )
+            else:
+                await self.db.execute(
+                    "INSERT INTO ng_user_pending (player_id, kind, data_json, created_at) VALUES ($1,$2,$3,$4)",
+                    (pid, kind, payload, now),
+                )
+        except Exception:
+            log.exception("set_user_pending")
+            # best-effort create table then retry once
+            try:
+                await self.db.execute(
+                    """CREATE TABLE IF NOT EXISTS ng_user_pending (
+                        player_id BIGINT PRIMARY KEY,
+                        kind TEXT NOT NULL,
+                        data_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    )"""
+                )
+                await self.db.execute(
+                    "INSERT INTO ng_user_pending (player_id, kind, data_json, created_at) VALUES ($1,$2,$3,$4)",
+                    (pid, kind, payload, now),
+                )
+            except Exception:
+                log.exception("set_user_pending retry")
+
+    async def get_user_pending(self, pid: int) -> dict | None:
+        pid = int(pid)
+        try:
+            row = await self.db.fetchrow(
+                "SELECT kind, data_json, created_at FROM ng_user_pending WHERE player_id=$1",
+                (pid,),
+            )
+            if not row:
+                return None
+            data = {}
+            try:
+                data = json.loads(row.get("data_json") or "{}")
+            except Exception:
+                data = {}
+            out = {"kind": row.get("kind"), **(data if isinstance(data, dict) else {})}
+            # expire after 30 minutes
+            try:
+                ts = datetime.fromisoformat(str(row.get("created_at")).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - ts).total_seconds() > 1800:
+                    await self.clear_user_pending(pid)
+                    return None
+            except Exception:
+                pass
+            return out
+        except Exception:
+            log.exception("get_user_pending")
+            return None
+
+    async def clear_user_pending(self, pid: int) -> None:
+        pid = int(pid)
+        try:
+            await self.db.execute("DELETE FROM ng_user_pending WHERE player_id=$1", (pid,))
+        except Exception:
+            log.exception("clear_user_pending")
+
     async def get_main_group(self) -> str:
         """Primary game group (config MAIN_GROUP). Statements always post here."""
         return str(self.group_id or "").strip()
@@ -5409,10 +5490,8 @@ class Game:
         except GameError:
             raise
         except Exception as e:
-            log.warning("bot admin probe failed: %s", e)
-            raise GameError(
-                "نتوانستم وضعیت ادمین بودن ربات را بررسی کنم. مطمئن شوید ربات عضو و ادمین است."
-            )
+            log.warning("bot admin probe failed (soft allow): %s", e)
+            # Soft-allow: still register so owner is not stuck with silent/no feedback path
 
         if not invite and str(chat_ref).startswith("@"):
             invite = "https://ble.ir/" + str(chat_ref).lstrip("@")

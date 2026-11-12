@@ -71,6 +71,41 @@ BTN_MORE = "📂 منوی بیشتر"
 BTN_NPT = "پیمان NPT"
 
 _pending: dict[int, dict] = {}
+
+
+async def _set_pending(game, pid: int, kind: str, **extra) -> None:
+    pid = int(pid)
+    data = {"kind": kind, **extra}
+    _pending[pid] = data
+    try:
+        await game.set_user_pending(pid, kind, extra or {})
+    except Exception:
+        log.exception("persist pending failed kind=%s pid=%s", kind, pid)
+
+
+async def _get_pending(game, pid: int) -> dict | None:
+    pid = int(pid)
+    st = _pending.get(pid)
+    if st and st.get("kind"):
+        return st
+    try:
+        st = await game.get_user_pending(pid)
+        if st and st.get("kind"):
+            _pending[pid] = dict(st)
+            return _pending[pid]
+    except Exception:
+        log.exception("load pending failed pid=%s", pid)
+    return None
+
+
+async def _clear_pending(game, pid: int) -> None:
+    pid = int(pid)
+    _pending.pop(pid, None)
+    try:
+        await game.clear_user_pending(pid)
+    except Exception:
+        log.exception("clear pending failed pid=%s", pid)
+
 _hacker_shop_cache: dict[int, list] = {}  # pid -> list of item_code for indexed buy
 
 
@@ -500,6 +535,41 @@ def register_handlers(bot, app_ctx: dict):
                 await reply(message, f"❌ {e}")
                 return
             owner = game.is_owner(pid)
+
+            # ---- EARLY pending (DB+memory) so chat-id inputs never get swallowed ----
+            early_st = await _get_pending(game, pid)
+            if early_st and early_st.get("kind") == "force_add_chat":
+                if not owner:
+                    await _clear_pending(game, pid)
+                    await reply(message, "❌ فقط مالک")
+                    return
+                # cancel shortcuts
+                if text in ("لغو", "cancel", "/cancel", "❌ لغو"):
+                    await _clear_pending(game, pid)
+                    await reply(message, "عملیات لغو شد.", main_kb(owner))
+                    return
+                log.info("EARLY force_add_chat pid=%s text=%r", pid, text)
+                try:
+                    msg = await game.add_forced_chat(pid, text, bot=bot)
+                    await _clear_pending(game, pid)
+                    await reply(
+                        message,
+                        msg,
+                        ik([
+                            [("⚙️ عضویت اجباری", "ng:oforce")],
+                            back_row(),
+                        ]),
+                    )
+                except GameError as e:
+                    await reply(
+                        message,
+                        f"❌ {e}" + chr(10) + chr(10) + "دوباره آیدی/@ را بفرستید یا لغو کنید.",
+                        ik([cancel_row()]),
+                    )
+                except Exception as e:
+                    log.exception("EARLY force_add_chat")
+                    await reply(message, f"❌ خطا: {e}", ik([cancel_row()]))
+                return
             # owner panel commands only
             # Direct money ops (bypass pending — more reliable)
             if owner and (text.startswith("/give ") or text.startswith("پول ")):
@@ -584,14 +654,14 @@ def register_handlers(bot, app_ctx: dict):
 
             # Pending owner/player input must run before membership gate,
             # otherwise forced-join prompts swallow the typed chat id with no reply.
-            if pid not in _pending:
+            if not await _get_pending(game, pid):
                 if text not in ("/start", "شروع", "منو", "menu") and text not in (BTN_ABOUT, BTN_GUIDE, BTN_REF, BTN_NPT):
                     if not owner and not await require_membership(pid, message, False):
                         return
 
             # ---- pending typed flows ----
-            if pid in _pending:
-                st = _pending[pid]
+            st = await _get_pending(game, pid)
+            if st:
                 kind = st.get("kind")
                 if kind == "hacker_statement":
                     _pending.pop(pid, None)
@@ -960,12 +1030,13 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 if kind == "force_add_chat":
                     if not owner:
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, "❌ فقط مالک")
                         return
+                    log.info("force_add_chat input pid=%s text=%r", pid, text)
                     try:
                         msg = await game.add_forced_chat(pid, text, bot=bot)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(
                             message,
                             msg,
@@ -975,10 +1046,18 @@ def register_handlers(bot, app_ctx: dict):
                             ]),
                         )
                     except GameError as e:
-                        await reply(message, f"❌ {e}", ik([cancel_row()]))
-                    except Exception:
+                        await reply(
+                            message,
+                            f"❌ {e}" + chr(10) + chr(10) + "دوباره آیدی/@ را بفرستید یا لغو کنید.",
+                            ik([cancel_row()]),
+                        )
+                    except Exception as e:
                         log.exception("force_add_chat")
-                        await reply(message, "❌ خطا در افزودن گروه/کانال. دوباره تلاش کنید.", ik([cancel_row()]))
+                        await reply(
+                            message,
+                            f"❌ خطا در افزودن گروه/کانال: {e}" + chr(10) + "دوباره تلاش کنید یا لغو کنید.",
+                            ik([cancel_row()]),
+                        )
                     return
                 if kind == "owner_hp_all":
                     try:
@@ -1872,7 +1951,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
 
             if data in ("ng:home", "ng:busy", "ng:cancel"):
-                _pending.pop(pid, None)
+                await _clear_pending(game, pid)
                 nav_home(pid)
                 if data == "ng:busy":
                     await out("این کشور دارای بازیکن است.", main_kb(owner))
@@ -5102,7 +5181,7 @@ def register_handlers(bot, app_ctx: dict):
                 if not owner:
                     await out("❌ فقط مالک")
                     return
-                _pending[pid] = {"kind": "force_add_chat"}
+                await _set_pending(game, pid, "force_add_chat")
                 await out(
                     "➕ افزودن گروه یا کانال به عضویت اجباری\n\n"
                     "شرایط:\n"
