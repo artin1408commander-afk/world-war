@@ -265,8 +265,10 @@ async def async_main() -> None:
         asyncio.create_task(owner_inbox_loop(game, bot, settings.owner_id))
         asyncio.create_task(dm_notice_loop(game, bot))
         log.info("Starting Bale bot (python-bale-bot polling)")
-        # python-bale-bot 2.5 has NO bot.connect().
-        # Lifecycle: async with bot -> get_me -> updater.setup -> start_polling
+        # Compatible with python-bale-bot 2.4 and 2.5:
+        # - some versions lack Updater.setup()
+        # - start_polling() only launches a worker task; process must stay alive
+        # - Bot must also run the update fetcher queue consumer
         async with bot:
             try:
                 me = await bot.get_me()
@@ -276,12 +278,40 @@ async def async_main() -> None:
             except Exception:
                 log.exception("bot.get_me failed — check BALE_TOKEN")
                 raise
+
             updater = getattr(bot, "updater", None)
             if updater is None:
                 raise RuntimeError("Bot.updater missing — incompatible python-bale-bot version")
-            await updater.setup()
+
+            if hasattr(updater, "setup"):
+                await updater.setup()
+            else:
+                # Older Updater: inject stop event used by internal worker loop
+                import asyncio as _asyncio
+                stop_ev = _asyncio.Event()
+                for attr in (
+                    f"_{type(updater).__name__}__stop_worker_event",
+                    "_Updater__stop_worker_event",
+                    "__stop_worker_event",
+                ):
+                    try:
+                        setattr(updater, attr, stop_ev)
+                    except Exception:
+                        pass
+                log.info("Updater.setup missing — using legacy stop-event init")
+
+            # Queue consumer (dispatches on_message / on_callback)
+            fetcher = getattr(bot, "_updater_fetcher_wrapper", None) or getattr(bot, "_Bot__updater_fetcher_wrapper", None)
+            if callable(fetcher):
+                asyncio.create_task(fetcher())
+                log.info("Update fetcher task started")
+            else:
+                log.warning("No update fetcher wrapper found on Bot — events may not dispatch")
+
             log.info("Updater polling started — waiting for messages")
             await updater.start_polling()
+            # start_polling returns after spawning worker; keep process alive
+            await asyncio.Event().wait()
     finally:
         await db.close()
 
