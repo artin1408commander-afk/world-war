@@ -259,8 +259,8 @@ def ticket_owner_menu_kb():
 def ticket_owner_view_kb(tid: int, *, is_open: bool = True):
     rows = []
     if is_open:
-        rows.append([("✉️ پاسخ به کاربر", f"ng:otix:reply:{tid}")])
-        rows.append([("🔒 بستن تیکت", f"ng:otix:close:{tid}")])
+        rows.append([("✉️ پاسخ به کاربر", f"ng:otix:reply:{int(tid)}")])
+        rows.append([("🔒 بستن تیکت", f"ng:otix:close:{int(tid)}")])
     rows.append([("📂 لیست باز", "ng:otix:openlist"), ("⏳ بی‌پاسخ", "ng:otix:unans")])
     rows.append([("🎫 منوی تیکت‌ها", "ng:otix")])
     rows.append(back_row())
@@ -4925,7 +4925,6 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             # ── Tickets (user + owner) ────────────────────────────────
-            # ── User tickets ───────────────────────────────────────
             if data == "ng:tix:mine":
                 rows_t = await game.list_tickets_for_user(pid)
                 if not rows_t:
@@ -4942,18 +4941,10 @@ def register_handlers(bot, app_ctx: dict):
                 return
             if data == "ng:tix:new":
                 await _set_pending(game, pid, "ticket_new_body")
-                await out(
-                    "✍️ متن تیکت را بنویسید:\n(حداقل ۳ کاراکتر)",
-                    ik([cancel_row()]),
-                    force_new=True,
-                )
+                await out("✍️ متن تیکت را بنویسید:\n(حداقل ۳ کاراکتر)", ik([cancel_row()]), force_new=True)
                 return
             if data.startswith("ng:tix:open:"):
-                try:
-                    tid = int(data.split(":")[-1])
-                except Exception:
-                    await out("❌ شناسه تیکت نامعتبر است.", force_new=True)
-                    return
+                tid = int(data.split(":")[-1])
                 t = await game.get_ticket(tid)
                 if not t or int(t["player_id"]) != int(pid):
                     await out("❌ تیکت یافت نشد.", force_new=True)
@@ -4962,29 +4953,23 @@ def register_handlers(bot, app_ctx: dict):
                 body = game.format_ticket_thread(t, msgs)
                 rows = []
                 if t.get("status") == "open":
-                    rows.append([("✉️ ادامه گفتگو", f"ng:tix:reply:{tid}")])
-                rows.append([("📬 تیکت‌های من", "ng:tix:mine")])
+                    rows.append([("✉️ پاسخ", f"ng:tix:reply:{tid}")])
                 rows.append(back_row())
                 await out(body, ik(rows), force_new=True)
                 return
             if data.startswith("ng:tix:reply:"):
-                try:
-                    tid = int(data.split(":")[-1])
-                except Exception:
-                    await out("❌ شناسه تیکت نامعتبر است.", force_new=True)
-                    return
+                tid = int(data.split(":")[-1])
                 t = await game.get_ticket(tid)
                 if not t or int(t["player_id"]) != int(pid):
                     await out("❌ تیکت یافت نشد.", force_new=True)
                     return
                 if t.get("status") != "open":
-                    await out("این تیکت بسته است.", ik([[("📬 تیکت‌های من", "ng:tix:mine")]]), force_new=True)
+                    await out("این تیکت بسته است.", force_new=True)
                     return
                 await _set_pending(game, pid, "ticket_reply_body", ticket_id=tid, is_admin=False)
                 await out("پیام خود را بنویسید:", ik([cancel_row()]), force_new=True)
                 return
 
-            # ── Owner tickets ──────────────────────────────────────
             if data == "ng:otix":
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
@@ -4997,15 +4982,12 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 rows_t = await game.list_open_tickets()
                 if not rows_t:
-                    await out("تیکت بازی وجود ندارد.", ik(ticket_owner_menu_kb()), force_new=True)
+                    await out("تیکت بازی نیست.", ik([[("🎫 تیکت‌ها", "ng:otix")], back_row()]), force_new=True)
                     return
-                kb = []
-                for t in rows_t[:20]:
-                    sub = (t.get("subject") or "")[:22]
-                    kb.append([(f"#{t['id']} | u:{t['player_id']} | {sub}", f"ng:otix:view:{t['id']}")])
-                kb.append([("🎫 منوی تیکت‌ها", "ng:otix")])
+                kb = [[(f"#{t['id']} | u:{t['player_id']} | {(t.get('subject') or '')[:20]}", f"ng:otix:view:{t['id']}")] for t in rows_t[:20]]
+                kb.append([("🎫 تیکت‌ها", "ng:otix")])
                 kb.append(back_row())
-                await out(f"📂 تیکت‌های باز ({len(rows_t)}):", ik(kb), force_new=True)
+                await out("تیکت‌های باز:", ik(kb), force_new=True)
                 return
             if data == "ng:otix:unans":
                 if not owner:
@@ -5013,24 +4995,21 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 rows_t = await game.list_unanswered_tickets()
                 if not rows_t:
-                    await out("مورد جواب‌نداده‌ای نیست.", ik(ticket_owner_menu_kb()), force_new=True)
+                    await out("مورد جواب‌نداده‌ای نیست.", ik([[("🎫 تیکت‌ها", "ng:otix")], back_row()]), force_new=True)
                     return
-                kb = []
-                for t in rows_t[:20]:
-                    sub = (t.get("subject") or "")[:22]
-                    kb.append([(f"#{t['id']} | u:{t['player_id']} | {sub}", f"ng:otix:view:{t['id']}")])
-                kb.append([("🎫 منوی تیکت‌ها", "ng:otix")])
+                kb = [[(f"#{t['id']} | u:{t['player_id']} | {(t.get('subject') or '')[:20]}", f"ng:otix:view:{t['id']}")] for t in rows_t[:20]]
+                kb.append([("🎫 تیکت‌ها", "ng:otix")])
                 kb.append(back_row())
-                await out(f"⏳ جواب‌داده‌نشده ({len(rows_t)}):", ik(kb), force_new=True)
+                await out("تیکت‌های جواب‌داده‌نشده:", ik(kb), force_new=True)
                 return
             if data.startswith("ng:otix:view:") or data.startswith("ng:otix:open:"):
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
                     return
                 try:
-                    tid = int(data.split(":")[-1])
+                    tid = int(str(data).split(":")[-1])
                 except Exception:
-                    await out("❌ شناسه تیکت نامعتبر است.", force_new=True)
+                    await out("❌ شناسه تیکت نامعتبر.", force_new=True)
                     return
                 t = await game.get_ticket(tid)
                 if not t:
@@ -5045,20 +5024,9 @@ def register_handlers(bot, app_ctx: dict):
                 if not owner:
                     await out("❌ فقط مالک", force_new=True)
                     return
-                try:
-                    tid = int(data.split(":")[-1])
-                except Exception:
-                    await out("❌ شناسه تیکت نامعتبر است.", force_new=True)
-                    return
-                t = await game.get_ticket(tid)
-                if not t:
-                    await out("تیکت یافت نشد.", force_new=True)
-                    return
-                if t.get("status") != "open":
-                    await out("این تیکت قبلاً بسته شده است.", ik(ticket_owner_view_kb(tid, is_open=False)), force_new=True)
-                    return
-                await _set_pending(game, pid, "ticket_reply_body", ticket_id=tid, is_admin=True)
-                await out("✏️ پاسخ ادمین را بنویسید:", ik([cancel_row()]), force_new=True)
+                tid = int(data.split(":")[-1])
+                _pending[pid] = {"kind": "ticket_reply_body", "ticket_id": tid, "is_admin": True}
+                await out("پاسخ ادمین را بنویسید:", ik([cancel_row()]), force_new=True)
                 return
             if data.startswith("ng:otix:close:"):
                 if not owner:
@@ -5067,21 +5035,20 @@ def register_handlers(bot, app_ctx: dict):
                 try:
                     tid = int(str(data).split(":")[-1])
                 except Exception:
-                    await out("❌ شناسه تیکت نامعتبر است.", force_new=True)
+                    await out("❌ شناسه تیکت نامعتبر.", force_new=True)
                     return
                 try:
                     result = await game.close_ticket(tid, pid)
                     try:
                         if hasattr(cq, "answer"):
-                            await cq.answer(text="تیکت بسته شد", show_alert=False)
+                            await cq.answer(text="تیکت بسته شد", show_alert=True)
                     except Exception:
                         pass
-                    # notify user
                     try:
-                        t = await game.get_ticket(tid)
-                        if t and hasattr(bot, "send_message"):
+                        tclosed = await game.get_ticket(tid)
+                        if tclosed and hasattr(bot, "send_message"):
                             await bot.send_message(
-                                int(t["player_id"]),
+                                int(tclosed["player_id"]),
                                 f"🔒 تیکت #{tid} توسط پشتیبانی بسته شد.",
                                 components=banned_kb(),
                             )
@@ -5095,8 +5062,666 @@ def register_handlers(bot, app_ctx: dict):
                 except GameError as e:
                     await out(f"❌ {e}", ik(ticket_owner_menu_kb()), force_new=True)
                 except Exception:
-                    log.exception("otix close failed tid=%s", data)
+                    log.exception("otix close failed data=%s", data)
                     await out("❌ بستن تیکت ناموفق بود. دوباره تلاش کنید.", ik(ticket_owner_menu_kb()), force_new=True)
+                return
+            if data == "ng:ohpall":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                _pending[pid] = {"kind": "owner_hp_all"}
+                await out(
+                    "❤️ جون همگانی" + chr(10)
+                    + "مقدار تغییر HP برای همه کشورهای بازیکن را بنویسید:" + chr(10) + chr(10)
+                    + "مثال افزایش: 100 یا +100" + chr(10)
+                    + "مثال کاهش: -100" + chr(10) + chr(10)
+                    + "بدون سقف برای افزایش (max_hp در صورت نیاز بالا می‌رود).",
+                    ik([cancel_row()]),
+                    force_new=True,
+                )
+                return
+
+            if data == "ng:ogiveall":
+                _pending[pid] = {"kind": "owner_give_all"}
+                await out(
+                    "💵 پول همگانی (واریز / کسر)" + chr(10)
+                    + "مبلغ یکسان برای همه کشورهای بازیکن را بنویسید:" + chr(10) + chr(10)
+                    + "مثال واریز: 5000000" + chr(10)
+                    + "مثال کسر از همه: -10000" + chr(10) + chr(10)
+                    + "عدد منفی = کم کردن از خزانه‌ی همه",
+                    ik([cancel_row()]),
+                )
+                return
+            if data == "ng:odaily":
+                try:
+                    targets = await game.list_daily_payout_targets()
+                    n = await game.daily_payout_all(force=True)
+                    if n:
+                        await out(
+                            "✅ پرداخت دستی درآمد روزانه انجام شد." + "\n"
+                            + f"تعداد کشورها: {n}" + "\n"
+                            + "فقط کشورهای زندهٔ دارای رهبر (غیرنابود، غیرریست، غیر بن) پرداخت شدند." + "\n"
+                            + "اگر دوباره بزنید، دوباره پرداخت می‌شود."
+                        )
+                    else:
+                        await out(
+                            "ℹ️ کشوری برای پرداخت نیست." + "\n"
+                            + f"کشورهای واجد شرایط الان: {len(targets)}" + "\n"
+                            + "(نابود / بدون رهبر / بن‌شده حساب نمی‌شوند)"
+                        )
+                except Exception as e:
+                    log.exception("odaily")
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:omoney":
+                _pending[pid] = {"kind": "admin_money"}
+                await out("فرمت: CODE مبلغ\nمثال: IR 1000000")
+                return
+            if data == "ng:oreset1":
+                await out(
+                    "⚠ تمام داده‌های جهان پاک می‌شود.\nادامه؟",
+                    ik([[("تأیید مرحله بعد", "ng:oreset2")], back_row()]),
+                )
+                return
+            if data == "ng:oreset2":
+                _pending[pid] = {"kind": "reset_phrase"}
+                await out("عبارت زیر را دقیق بنویسید:\nریست کامل جهان")
+                return
+
+
+            if data == "ng:joincheck":
+                ok = await require_membership(pid, cq, True, force=True)
+                if ok:
+                    await out(
+                        "✅ عضویت تأیید شد." + chr(10) + "حالا می‌توانید از ربات استفاده کنید.",
+                        main_kb(owner, bool(code)),
+                    )
+                return
+            if data.startswith("ng:joinlink:"):
+                chats = await game.list_forced_chats()
+                try:
+                    cid = int(data.split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر")
+                    return
+                ch = next((c for c in chats if int(c["id"]) == cid), None)
+                if not ch:
+                    await out("❌ مورد یافت نشد")
+                    return
+                link = (ch.get("invite_link") or "").strip()
+                if not link:
+                    raw = str(ch.get("chat_id") or "")
+                    if raw.startswith("@"):
+                        link = "https://ble.ir/" + raw.lstrip("@")
+                title = ch.get("title") or ch.get("chat_id")
+                if link:
+                    await out(
+                        f"📥 لینک عضویت «{title}»:" + chr(10) + str(link) + chr(10) + chr(10)
+                        + "عضو شوید سپس «عضو شدم — تأیید» را بزنید.",
+                        ik([
+                            [("📥 باز کردن لینک", link)],
+                            [("✅ عضو شدم — تأیید", "ng:joincheck")],
+                        ]),
+                    )
+                else:
+                    await out(
+                        f"شناسه: {ch.get('chat_id')}" + chr(10) + "لینک ثبت نشده. از جست‌وجوی بله عضو شوید.",
+                        ik([[("✅ عضو شدم — تأیید", "ng:joincheck")]]),
+                    )
+                return
+
+
+
+
+            # ---- Country control ----
+            if data == "ng:ctrl":
+                nav_push(pid, "ctrl")
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                text_c = await game.control.panel_text(code)
+                rows = [
+                    [("📜 تصویب قوانین", "ng:ctrl:laws")],
+                    [("🌊 کنترل تنگه‌ها", "ng:ctrl:straits")],
+                    [("✈️ پروازها", "ng:ctrl:flights"), ("🚢 دریایی", "ng:ctrl:maritime")],
+                    [("🌐 اینترنت", "ng:ctrl:net")],
+                    back_row(),
+                ]
+                await out(text_c, ik(rows))
+                return
+            if data == "ng:ctrl:flights":
+                rows = [[("✈️ باز کردن", "ng:ctrl:fly:1"), ("⛔ توقف", "ng:ctrl:fly:0")], back_row()]
+                await out("مدیریت پروازها:", ik(rows))
+                return
+            if data.startswith("ng:ctrl:fly:"):
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                try:
+                    await out(await game.control.toggle_flights(code, pid, data.endswith(":1")))
+                except ControlError as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:ctrl:maritime":
+                rows = [[("🚢 باز کردن", "ng:ctrl:sea:1"), ("⛔ توقف", "ng:ctrl:sea:0")], back_row()]
+                await out("مدیریت سفر دریایی:", ik(rows))
+                return
+            if data.startswith("ng:ctrl:sea:"):
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                try:
+                    await out(await game.control.toggle_maritime(code, pid, data.endswith(":1")))
+                except ControlError as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:ctrl:net":
+                rows = [[("🌐 وصل", "ng:ctrl:net:1"), ("⛔ قطع", "ng:ctrl:net:0")], back_row()]
+                await out("مدیریت اینترنت:", ik(rows))
+                return
+            if data.startswith("ng:ctrl:net:") and data.count(":") == 3:
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                try:
+                    await out(await game.control.toggle_internet(code, pid, data.endswith(":1")))
+                except ControlError as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:ctrl:straits":
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                rows = []
+                straits = await game.control.list_controllable_straits(code)
+                if not straits:
+                    await out("کشور شما اختیار کنترل هیچ تنگه استراتژیکی را ندارد.", ik([back_row()]))
+                    return
+                for s in straits:
+                    st = "بسته ⛔" if int(s["closed"]) else "باز ✅"
+                    rows.append([(f"{s['name_fa']} ({st})", f"ng:strait:{s['strait_code']}")])
+                rows.append(back_row())
+                await out("تنگه‌های تحت اختیار شما:", ik(rows))
+                return
+            if data.startswith("ng:strait:") and data.count(":") == 2:
+                sc = data.split(":")[-1]
+                rows = [
+                    [("⛔ بستن تنگه", f"ng:straitclose:{sc}"), ("✅ باز کردن", f"ng:straitopen:{sc}")],
+                    back_row(),
+                ]
+                await out("عملیات تنگه:", ik(rows))
+                return
+            if data.startswith("ng:straitclose:"):
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                try:
+                    await out(await game.control.toggle_strait(code, pid, data.split(":")[-1], True))
+                except ControlError as e:
+                    await out(f"❌ {e}")
+                return
+            if data.startswith("ng:straitopen:"):
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                try:
+                    await out(await game.control.toggle_strait(code, pid, data.split(":")[-1], False))
+                except ControlError as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:ctrl:laws":
+                rows = [
+                    [("✍️ قانون جدید", "ng:lawnew")],
+                    [("📋 قوانین فعال من", "ng:lawmine")],
+                    back_row(),
+                ]
+                await out("📜 تصویب قوانین\nهر کشور حداکثر ۳ قانون در روز. با ثبت هر قانون ۵٬۰۰۰٬۰۰۰ به خزانه اضافه می‌شود (جدا از درآمد روزانه).", ik(rows))
+                return
+            if data == "ng:lawnew":
+                _pending[pid] = {"kind": "law_title"}
+                await out("عنوان قانون را بنویسید:", ik([cancel_row()]))
+                return
+            if data == "ng:lawmine":
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                laws = await game.control.active_laws_for(code)
+                if not laws:
+                    await out("قانون فعالی ندارید.")
+                    return
+                lines = ["قوانین فعال:"]
+                for L in laws:
+                    lines.append(f"• #{L['id']} {L['title']} (+{int(float(L['income_bonus'] or 0)):,}/روز)")
+                await out("\n".join(lines))
+                return
+            if data == "ng:olaws":
+                laws = await game.control.pending_laws()
+                rows = []
+                lines = [f"📜 قوانین در انتظار: {len(laws)}"]
+                for L in laws[:20]:
+                    name = await game.country_label(L["country_code"])
+                    lines.append(f"#{L['id']} {name}: {L['title']}")
+                    rows.append([
+                        (f"✅ #{L['id']}", f"ng:lawok:{L['id']}"),
+                        (f"❌ #{L['id']}", f"ng:lawno:{L['id']}"),
+                    ])
+                rows.append(back_row())
+                await out("\n".join(lines), ik(rows))
+                return
+            if data.startswith("ng:lawok:"):
+                lid = int(data.split(":")[-1])
+                _pending[pid] = {"kind": "law_bonus", "law_id": lid}
+                await out("در صورت تمایل، پاداش درآمد روزانه این قانون را به عدد بنویسید (۰ تا ۵ میلیون). برای بدون پاداش ۰ بفرستید:")
+                return
+            if data.startswith("ng:lawno:"):
+                try:
+                    await out(await game.control.review_law(int(data.split(":")[-1]), pid, False))
+                except ControlError as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:go:eco":
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                await out(await game.economy_card(code))
+                return
+
+
+
+            if data == "ng:oprices":
+                rows = []
+                pair = []
+                for cat, name in CAT_FA.items():
+                    pair.append((name, f"ng:opricecat:{cat}"))
+                    if len(pair) == 2:
+                        rows.append(pair)
+                        pair = []
+                if pair:
+                    rows.append(pair)
+                rows.append(back_row())
+                await out("🏷 قیمت فروشگاه\nدسته را انتخاب کنید:", ik(rows))
+                return
+            if data.startswith("ng:opricecat:"):
+                cat = data.split(":")[-1]
+                items = await game.list_catalog_by_category(cat)
+                rows = []
+                for i in items[:40]:
+                    rows.append([(
+                        f"{i['name_fa']} | {int(float(i['unit_price'])):,}",
+                        f"ng:opriceitem:{i['item_code']}",
+                    )])
+                rows.append([("⬅️ دسته‌ها", "ng:oprices")])
+                rows.append(back_row())
+                await out(f"آیتم‌های {CAT_FA.get(cat, cat)} — روی مورد بزنید تا قیمت جدید بدهید:", ik(rows))
+                return
+            if data.startswith("ng:opriceitem:"):
+                ic = data.split(":")[-1]
+                await game._reload_catalog_prices()
+                it = game._cat.get(ic) or {}
+                _pending[pid] = {"kind": "set_shop_price", "item": ic}
+                await out(
+                    f"قیمت فعلی «{it.get('name_fa', ic)}»: {int(float(it.get('unit_price') or 0)):,}\n"
+                    f"قیمت جدید را به عدد بنویسید:",
+                    ik([cancel_row()]),
+                )
+                return
+            if data == "ng:odiscount":
+                cur = await game.get_shop_discount_pct()
+                status = (
+                    f"تخفیف فعلی: {int(cur)}٪ فعال"
+                    if cur > 0
+                    else "تخفیف فعلی: خاموش (قیمت پایه)"
+                )
+                rows = [
+                    [("۱۰٪", "ng:odiscon:10"), ("۲۰٪", "ng:odiscon:20")],
+                    [("۳۰٪", "ng:odiscon:30"), ("۴۰٪", "ng:odiscon:40")],
+                    [("۵۰٪", "ng:odiscon:50"), ("۶۰٪", "ng:odiscon:60")],
+                    [("۷۰٪", "ng:odiscon:70")],
+                    [("❌ غیرفعال کردن تخفیف", "ng:odiscoff")],
+                    back_row(),
+                ]
+                await out(
+                    "🏷 تخفیف سراسری فروشگاه" + "\n"
+                    + status + "\n\n"
+                    + "تخفیف روی قیمت پایه همه کالاها اعمال می‌شود." + "\n"
+                    + "قیمت پایه در دیتابیس عوض نمی‌شود." + "\n"
+                    + "آیتم جدید و تغییر قیمت هم شامل تخفیف می‌شوند." + "\n"
+                    + "با خاموش کردن، همه به قیمت پایه برمی‌گردند.",
+                    ik(rows),
+                )
+                return
+            if data.startswith("ng:odiscon:"):
+                pct = float(data.split(":")[-1])
+                try:
+                    await out(await game.set_shop_discount(pid, pct))
+                except GameError as e:
+                    await out(f"❌ {e}")
+                return
+            if data == "ng:odiscoff":
+                try:
+                    await out(await game.set_shop_discount(pid, 0))
+                except GameError as e:
+                    await out(f"❌ {e}")
+                return
+
+            # ---- Double HP (owner only) ----
+            if data == "ng:odblhp":
+                countries = await game.list_countries()
+                owned = [c for c in countries if c.get("owner_player_id")]
+                if not owned:
+                    await out("هیچ کشور دارای مالکی نیست.", main_kb(owner))
+                    return
+                rows = []
+                for c in owned[:35]:
+                    try:
+                        on = int(c.get("double_hp") or 0) == 1
+                    except Exception:
+                        on = False
+                    mark = "✅×۲" if on else "—"
+                    rows.append([(
+                        f"{mark} {c.get('flag') or ''} {c['name_fa']}".strip(),
+                        f"ng:odbl:{c['country_code']}",
+                    )])
+                rows.append(back_row())
+                await out("🧬 جان ۲ برابر\nکشور را انتخاب کنید:", ik(rows))
+                return
+
+            if data.startswith("ng:odbl:") and data.count(":") == 2 and not data.startswith("ng:odblon") and not data.startswith("ng:odbloff"):
+                code = data.split(":")[-1]
+                c = await game.db.fetchrow(
+                    "SELECT * FROM ng_countries WHERE country_code=$1", (code,)
+                )
+                if not c:
+                    await out("کشور یافت نشد")
+                    return
+                on = int(c.get("double_hp") or 0) == 1
+                st = "فعال ✅" if on else "غیرفعال"
+                rows = [
+                    [
+                        ("✅ فعال کردن ×۲", f"ng:odblon:{code}"),
+                        ("❌ خاموش کردن", f"ng:odbloff:{code}"),
+                    ],
+                    back_row(),
+                ]
+                await out(
+                    f"{c.get('flag') or ''} {c['name_fa']}\n"
+                    f"جان ۲ برابر: {st}\n"
+                    f"سلامت: {int(float(c['hp']))}/{int(float(c['max_hp']))}",
+                    ik(rows),
+                )
+                return
+
+            if data.startswith("ng:odblon:"):
+                code = data.split(":")[-1]
+                try:
+                    await out(await game.set_double_hp(pid, code, True))
+                except GameError as e:
+                    await out(f"❌ {e}")
+                except Exception:
+                    log.exception("double_hp on")
+                    await out("❌ خطا در فعال‌سازی جان ۲ برابر")
+                return
+
+            if data.startswith("ng:odbloff:"):
+                code = data.split(":")[-1]
+                try:
+                    await out(await game.set_double_hp(pid, code, False))
+                except GameError as e:
+                    await out(f"❌ {e}")
+                except Exception:
+                    log.exception("double_hp off")
+                    await out("❌ خطا در خاموش کردن جان ۲ برابر")
+                return
+
+            if data.startswith("ng:oudblon:"):
+                tid = int(data.split(":")[-1])
+                p = await game.db.fetchrow(
+                    "SELECT country_code FROM ng_players WHERE player_id=$1", (tid,)
+                )
+                code = (p or {}).get("country_code")
+                if not code:
+                    await out("این کاربر کشور ندارد.")
+                    return
+                try:
+                    await out(await game.set_double_hp(pid, code, True))
+                except GameError as e:
+                    await out(f"❌ {e}")
+                except Exception:
+                    log.exception("oudbl on")
+                    await out("❌ خطا در فعال‌سازی جان ۲ برابر")
+                return
+
+            if data.startswith("ng:oudbloff:"):
+                tid = int(data.split(":")[-1])
+                p = await game.db.fetchrow(
+                    "SELECT country_code FROM ng_players WHERE player_id=$1", (tid,)
+                )
+                code = (p or {}).get("country_code")
+                if not code:
+                    await out("این کاربر کشور ندارد.")
+                    return
+                try:
+                    await out(await game.set_double_hp(pid, code, False))
+                except GameError as e:
+                    await out(f"❌ {e}")
+                except Exception:
+                    log.exception("oudbl off")
+                    await out("❌ خطا در خاموش کردن جان ۲ برابر")
+                return
+
+            if data == "ng:ohp" or data.startswith("ng:ohp:"):
+                page = 0
+                if data.startswith("ng:ohp:"):
+                    try:
+                        page = int(data.split(":")[-1])
+                    except ValueError:
+                        page = 0
+                text_hp, total = await game.list_owned_countries_hp(page=page, page_size=12)
+                nav = []
+                pages = max(1, (total + 11) // 12)
+                if page > 0:
+                    nav.append(("⬅️ قبلی", f"ng:ohp:{page-1}"))
+                if page + 1 < pages:
+                    nav.append(("بعدی ➡️", f"ng:ohp:{page+1}"))
+                rows = []
+                if nav:
+                    rows.append(nav)
+                rows.append([("🛡 بازگشت پنل مالک", "ng:opanel")])
+                await out(text_hp, ik(rows))
+                return
+            if data == "ng:orank" or data.startswith("ng:orank:"):
+                page = 0
+                if data.startswith("ng:orank:"):
+                    try:
+                        page = int(data.split(":")[-1])
+                    except ValueError:
+                        page = 0
+                try:
+                    text_r, total = await game.ranking_power(page=page, page_size=10)
+                except Exception as e:
+                    log.exception("orank")
+                    await out(f"❌ خطا در رنکینگ: {e}", force_new=True)
+                    return
+                nav = []
+                pages = max(1, (total + 9) // 10)
+                if page > 0:
+                    nav.append(("⬅️ قبلی", f"ng:orank:{page-1}"))
+                if page + 1 < pages:
+                    nav.append(("بعدی ➡️", f"ng:orank:{page+1}"))
+                rows = []
+                if nav:
+                    rows.append(nav)
+                rows.append([("🔄 بروزرسانی", f"ng:orank:{page}")])
+                rows.append([("🛡 بازگشت پنل مالک", "ng:opanel")])
+                await out(text_r, ik(rows), force_new=True)
+                return
+
+            if data == "ng:opanel":
+                rows = []
+                if game.is_primary_owner(pid):
+                    rows.append([("➕ افزودن مالک جدید", "ng:owners"), ("🛡 لیست مالکان", "ng:owners")])
+                try:
+                    hc = await game.is_hardcore_mode()
+                    hc_label = "☠️ هاردکور: روشن — خاموش کن" if hc else "☠️ هاردکور: خاموش — روشن کن"
+                except Exception:
+                    hc_label = "☠️ هاردکور روشن/خاموش"
+                rows += [
+                    [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
+                    [(hc_label, "ng:ohardcore")],
+                    [("🔒 قطع/فعال خرید فروشگاه", "ng:oshop")],
+                    [("💵 پول همگانی", "ng:ogiveall"), ("❤️ جون همگانی", "ng:ohpall")],
+                    [("💰 پرداخت درآمد روزانه", "ng:odaily")],
+                    [("❤️ دیدن HP ها", "ng:ohp"), ("🏅 رنکینگ", "ng:orank")],
+                    [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
+                    [("🎁 مدیریت لجندری", "ng:oleg"), ("💰 شارژ کیف پول", "ng:owallet")],
+                    [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
+                    [("🔒 محدودیت لجندری روشن", "ng:llock:1")],
+                    [("🔓 محدودیت لجندری خاموش", "ng:llock:0")],
+                    [("🔒 وضعیت محدودیت لجندری", "ng:llock")],
+                    [("⬅️ بستن", "ng:home")],
+                ]
+                await out("🛡 پنل مالک / سازمان ملل", ik(rows))
+                return
+            if data.startswith("ng:osethp:"):
+                if not owner:
+                    await out("❌ فقط مالک")
+                    return
+                try:
+                    tid = int(data.split(":")[-1])
+                except ValueError:
+                    await out("❌ شناسه نامعتبر")
+                    return
+                # live country for status text
+                try:
+                    code = await game.resolve_country_for_player(tid)
+                except Exception:
+                    code = None
+                cur_hp = "—"
+                max_hp = "—"
+                cname = "بدون کشور"
+                if code:
+                    c = await game.db.fetchrow(
+                        "SELECT name_fa, flag, hp, max_hp FROM ng_countries WHERE country_code=$1",
+                        (code,),
+                    )
+                    if c:
+                        cname = f"{c.get('flag') or ''} {c.get('name_fa') or code}".strip()
+                        cur_hp = int(float(c.get("hp") or 0))
+                        max_hp = int(float(c.get("max_hp") or 1000))
+                _pending[pid] = {"kind": "owner_set_hp", "target": tid}
+                await out(
+                    "❤️ تنظیم HP" + "\n"
+                    + f"بازیکن: {tid}" + "\n"
+                    + f"کشور: {cname}" + "\n"
+                    + f"HP فعلی: {cur_hp} / {max_hp}" + "\n\n"
+                    + "فرمت را این‌طور بفرستید:" + "\n"
+                    + "فعلی/سقف" + "\n"
+                    + "مثال: 300/1000" + "\n"
+                    + "مثال: 4000/4000" + "\n"
+                    + "(بدون محدودیت عددی)",
+                    ik([cancel_row()]),
+                )
+                return
+
+            async def _owner_player_profile_kb(tid: int):
+                fast_on = False
+                try:
+                    fast_on = await game.has_fast_attack_cd(int(tid))
+                except Exception:
+                    log.exception("has_fast_attack_cd profile")
+                    fast_on = False
+                cd_row = (
+                    [("🕊 خاموش کردن CD30", f"ng:oucd30off:{tid}")]
+                    if fast_on
+                    else [("⚡ روشن کردن CD30", f"ng:oucd30on:{tid}")]
+                )
+                return [
+                    [("🚫 بن", f"ng:ouban:{tid}"), ("✅ آن‌بن", f"ng:ouunban:{tid}")],
+                    [("📦 دارایی‌ها", f"ng:ouinv:{tid}"), ("💰 پول", f"ng:oum:{tid}")],
+                    [("NPT وضعیت", f"ng:ounpt:{tid}")],
+                    [("➕ NPT", f"ng:ounptadd:{tid}"), ("➖ NPT", f"ng:ounptdel:{tid}")],
+                    [("❤️ تنظیم HP", f"ng:osethp:{tid}")],
+                    [("💵 دادن پول", f"ng:ougive:{tid}"), ("💸 گرفتن پول", f"ng:outake:{tid}")],
+                    [("🧾 مالیات از کاربر", f"ng:outax:{tid}")],
+                    [("🧬 جان ×۲ روشن", f"ng:oudblon:{tid}"), ("🧬 جان ×۲ خاموش", f"ng:oudbloff:{tid}")],
+                    *cd_row,
+                    [("⏱ رفع محدودیت ۳۰دقیقه", f"ng:dcd:{tid}")],
+                    [("♻️ ریکاوری نابودی", f"ng:orec:{tid}")],
+                    [("🗺 تنظیم کشور", f"ng:ousetcty:{tid}")],
+                    [("🪖 تنظیم تجهیزات", f"ng:oueq:{tid}")],
+                    [("🎁 آیتم لجندری", f"ng:olegp:{tid}")],
+                    [("♻️ ریست کردن کاربر", f"ng:oureset:{tid}")],
+                    [("⬅️ لیست کاربران", "ng:o:players:0")],
+                ]
+
+
+            if data.startswith("ng:ou:"):
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    tid = int(str(data).split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                try:
+                    try:
+                        await game.ensure_player_flags_table()
+                    except Exception:
+                        pass
+                    card = await game.player_admin_card(tid)
+                    rows = await _owner_player_profile_kb(tid)
+                    await out(card, ik(rows), force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("open player profile ng:ou tid=%s", data)
+                    await out(f"❌ خطا در باز کردن پروفایل: {e}", force_new=True)
+                return
+
+
+            if data.startswith("ng:oureset:"):
+                tid = int(data.split(":")[-1])
+                p = await game.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (tid,))
+                if not p:
+                    await out("بازیکن یافت نشد")
+                    return
+                code = p.get("country_code")
+                cname = await game.country_label(code) if code else "بدون کشور"
+                rows = [
+                    [("✅ تأیید ریست", f"ng:ouresetgo:{tid}"), ("❌ انصراف", f"ng:ou:{tid}")],
+                ]
+                text = (
+                    f"آیا مطمئن هستید؟\n\nکاربر: {tid}\nکشور: {cname}\n\n"
+                    "با ریست کردن این کاربر:\n"
+                    "• کشور فعلی او آزاد می‌شود.\n"
+                    "• مالکیت کشور حذف می‌شود.\n"
+                    "• دارایی‌ها و پیشرفت کشور بازنشانی می‌شود.\n"
+                    "• کاربر بدون کشور از ابتدا شروع می‌کند.\n"
+                    "• بن بودن تغییر نمی‌کند.\n"
+                    "• لاگ‌ها و سوابق مالی حفظ می‌شوند.\n\n"
+                    "این عملیات قابل بازگشت نیست."
+                )
+                await out(text, ik(rows))
+                return
+            if data.startswith("ng:ouresetgo:"):
+                try:
+                    tid = int(data.split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر", force_new=True)
+                    return
+                try:
+                    msg = await game.reset_player(pid, tid)
+                    await out(
+                        msg,
+                        ik([[("👤 بازیکنان", "ng:ousers")], [("🏠 خانه", "ng:home")]]),
+                        force_new=True,
+                    )
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("ouresetgo")
+                    await out(f"❌ خطا در ریست کاربر: {e}", force_new=True)
                 return
 
             if data.startswith("ng:ouban:"):
