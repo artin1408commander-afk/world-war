@@ -490,21 +490,9 @@ class Game:
         return await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (pid,))
 
     async def assert_not_banned(self, pid: int) -> None:
-        p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (pid,))
-        if not p:
-            return
-        if int(p.get("is_banned") or 0) == 1:
-            until = p.get("banned_until")
-            if until:
-                try:
-                    if datetime.now(timezone.utc) < datetime.fromisoformat(until.replace("Z", "+00:00")):
-                        raise GameError("شما مسدود شده‌اید و نمی‌توانید از بازی استفاده کنید.")
-                except GameError:
-                    raise
-                except Exception:
-                    raise GameError("شما مسدود شده‌اید.")
-            else:
-                raise GameError("شما مسدود شده‌اید و نمی‌توانید از بازی استفاده کنید.")
+        ban = await self.get_ban_info(pid)
+        if ban:
+            raise GameError("BANNED")
 
     async def resolve_country_for_player(self, pid: int, *, include_un_for_owner: bool = False) -> Optional[str]:
         """Canonical country for a player: ownership in ng_countries wins over ng_players cache."""
@@ -3395,27 +3383,445 @@ class Game:
             pass
 
 
-    async def ban(self, actor: int, target: int, reason: str = "") -> str:
+    async def ensure_ban_ticket_schema(self) -> None:
+        """Add ban metadata columns and ticket tables (idempotent)."""
+        alters = [
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS ban_code TEXT",
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS ban_days INTEGER",
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS ban_permanent INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS unban_package INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS banned_by INTEGER",
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS banned_at TEXT",
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS banned_until TEXT",
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS ban_reason TEXT",
+            "ALTER TABLE ng_players ADD COLUMN IF NOT EXISTS is_banned INTEGER NOT NULL DEFAULT 0",
+        ]
+        # SQLite may not support IF NOT EXISTS on ADD COLUMN — try both styles
+        for sql in alters:
+            try:
+                await self.db.execute(sql)
+            except Exception:
+                # fallback without IF NOT EXISTS
+                try:
+                    await self.db.execute(sql.replace(" IF NOT EXISTS", ""))
+                except Exception:
+                    pass
+        for ddl in (
+            """
+            CREATE TABLE IF NOT EXISTS ng_ban_codes (
+                ban_code TEXT PRIMARY KEY,
+                player_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS ng_tickets (
+                id INTEGER PRIMARY KEY,
+                player_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                subject TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                closed_at TEXT,
+                closed_by INTEGER,
+                last_user_msg_at TEXT,
+                last_admin_msg_at TEXT,
+                unread_admin INTEGER NOT NULL DEFAULT 1
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS ng_ticket_messages (
+                id INTEGER PRIMARY KEY,
+                ticket_id INTEGER NOT NULL,
+                sender_id INTEGER NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+        ):
+            try:
+                await self.db.execute(ddl)
+            except Exception:
+                log.exception("ensure_ban_ticket_schema ddl")
+
+    def _now_iso(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _to_jalali(self, dt: datetime | None = None) -> str:
+        """Gregorian -> Jalali date string YYYY/MM/DD (simple algorithm, no deps)."""
+        if dt is None:
+            dt = datetime.now(timezone.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            dt = dt.astimezone(ZoneInfo("Asia/Tehran"))
+        except Exception:
+            pass
+        gy, gm, gd = dt.year, dt.month, dt.day
+        g_d_n = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+        if gy > 1600:
+            jy = 979
+            gy -= 1600
+        else:
+            jy = 0
+            gy -= 621
+        gy2 = gy + 1 if gm > 2 else gy
+        days = (365 * gy) + (gy2 + 3) // 4 - (gy2 + 99) // 100 + (gy2 + 399) // 400 - 80 + gd + g_d_n[gm - 1]
+        jy += 33 * (days // 12053)
+        days %= 12053
+        jy += 4 * (days // 1461)
+        days %= 1461
+        if days > 365:
+            jy += (days - 1) // 365
+            days = (days - 1) % 365
+        if days < 186:
+            jm = 1 + days // 31
+            jd = 1 + (days % 31)
+        else:
+            jm = 7 + (days - 186) // 30
+            jd = 1 + ((days - 186) % 30)
+        return f"{jy:04d}/{jm:02d}/{jd:02d}"
+
+    def _format_ban_datetime(self, iso: str | None = None) -> tuple[str, str]:
+        """Return (jalali_date, gregorian_str with time Tehran)."""
+        try:
+            if iso:
+                dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+            else:
+                dt = datetime.now(timezone.utc)
+            from zoneinfo import ZoneInfo
+            tehran = dt.astimezone(ZoneInfo("Asia/Tehran"))
+            jal = self._to_jalali(tehran)
+            g = tehran.strftime("%Y/%m/%d %H:%M")
+            return jal, g
+        except Exception:
+            return "—", "—"
+
+    async def is_ban_code_taken(self, code: str) -> bool:
+        code = str(code or "").strip()
+        if not code:
+            return True
+        try:
+            await self.ensure_ban_ticket_schema()
+            row = await self.db.fetchrow(
+                "SELECT ban_code FROM ng_ban_codes WHERE ban_code=$1", (code,)
+            )
+            if row:
+                return True
+            row2 = await self.db.fetchrow(
+                "SELECT player_id FROM ng_players WHERE ban_code=$1 AND COALESCE(is_banned,0)=1",
+                (code,),
+            )
+            return bool(row2)
+        except Exception:
+            log.exception("is_ban_code_taken")
+            return False
+
+    async def get_ban_info(self, pid: int) -> dict | None:
+        """Active ban info or None. Auto-expires temporary bans."""
+        await self.ensure_ban_ticket_schema()
+        p = await self.db.fetchrow("SELECT * FROM ng_players WHERE player_id=$1", (int(pid),))
+        if not p or int(p.get("is_banned") or 0) != 1:
+            return None
+        until = p.get("banned_until")
+        if until and not int(p.get("ban_permanent") or 0):
+            try:
+                if datetime.now(timezone.utc) >= datetime.fromisoformat(str(until).replace("Z", "+00:00")):
+                    await self.db.execute(
+                        """UPDATE ng_players SET is_banned=0, ban_reason=NULL, banned_until=NULL,
+                           ban_code=NULL, ban_days=NULL, ban_permanent=0, unban_package=0,
+                           banned_by=NULL, banned_at=NULL WHERE player_id=$1""",
+                        (int(pid),),
+                    )
+                    return None
+            except Exception:
+                log.exception("auto expire ban")
+        return dict(p)
+
+    async def ban(
+        self,
+        actor: int,
+        target: int,
+        reason: str = "",
+        *,
+        ban_code: str | None = None,
+        days: int | None = None,
+        permanent: bool = False,
+        unban_package: bool = False,
+    ) -> str:
         if not self.is_owner(actor):
             raise GameError("مجاز نیستید")
+        await self.ensure_ban_ticket_schema()
+        target = int(target)
+        actor = int(actor)
+        reason = (reason or "").strip() or "نقض قوانین"
+        ban_code = str(ban_code or "").strip()
+        if not ban_code:
+            # legacy path: auto code
+            ban_code = str(int(datetime.now(timezone.utc).timestamp()) % 1000000)
+        if await self.is_ban_code_taken(ban_code):
+            # allow reuse only if same target already has it
+            existing = await self.db.fetchrow(
+                "SELECT player_id FROM ng_players WHERE ban_code=$1 AND player_id=$2",
+                (ban_code, target),
+            )
+            if not existing:
+                raise GameError("کد بن تکراری است")
+        banned_at = self._now_iso()
+        banned_until = None
+        ban_days = None
+        ban_permanent = 1 if permanent or (days is None and not permanent and days is None and False) else 0
+        if permanent:
+            ban_permanent = 1
+            ban_days = None
+            banned_until = None
+        else:
+            ban_permanent = 0
+            if days is None:
+                days = 1
+            ban_days = int(days)
+            if ban_days <= 0:
+                raise GameError("مدت بن نامعتبر است")
+            banned_until = (datetime.now(timezone.utc) + __import__("datetime").timedelta(days=ban_days)).isoformat()
+
         await self.db.execute(
-            "UPDATE ng_players SET is_banned=1, ban_reason=$1 WHERE player_id=$2",
-            (reason, target),
+            """UPDATE ng_players SET
+                is_banned=1,
+                ban_reason=$1,
+                ban_code=$2,
+                ban_days=$3,
+                ban_permanent=$4,
+                unban_package=$5,
+                banned_by=$6,
+                banned_at=$7,
+                banned_until=$8
+               WHERE player_id=$9""",
+            (
+                reason,
+                ban_code,
+                ban_days,
+                ban_permanent,
+                1 if unban_package else 0,
+                actor,
+                banned_at,
+                banned_until,
+                target,
+            ),
         )
-        await self.admin_log(actor, "ban", f"ban {target} {reason}")
+        try:
+            await self.db.execute(
+                "INSERT INTO ng_ban_codes (ban_code, player_id, created_at) VALUES ($1,$2,$3)",
+                (ban_code, target, banned_at),
+            )
+        except Exception:
+            # already exists — update owner
+            try:
+                await self.db.execute(
+                    "UPDATE ng_ban_codes SET player_id=$1, created_at=$2 WHERE ban_code=$3",
+                    (target, banned_at, ban_code),
+                )
+            except Exception:
+                pass
+
+        await self.admin_log(actor, "ban", f"ban {target} code={ban_code} days={ban_days} perm={ban_permanent}")
         await self.broadcast_log("ban", f"🚫 بازیکن {target} توسط سازمان ملل مسدود شد.")
-        return "مسدود شد."
+        return self.format_ban_admin_receipt(await self.get_ban_info(target) or {})
+
+    def format_ban_admin_receipt(self, ban: dict) -> str:
+        if not ban:
+            return "مسدود شد."
+        permanent = int(ban.get("ban_permanent") or 0) == 1
+        duration = "دائم" if permanent else f"{ban.get('ban_days') or '—'} روز"
+        jal, greg = self._format_ban_datetime(ban.get("banned_at"))
+        by = ban.get("banned_by")
+        by_s = f"@{by}" if by else "—"
+        pkg = "بله" if int(ban.get("unban_package") or 0) else "خیر"
+        lines = [
+            f"کاربر برای مدت {duration} مسدود شد از ربات",
+            f"کد بن او : #{ban.get('ban_code') or '—'}",
+            f"دلیل : {ban.get('ban_reason') or '—'}",
+            f"توسط {by_s}",
+            "ساعت / روز / ماه / سال:",
+            f"شمسی: {jal}",
+            f"میلادی: {greg}",
+            f"قابلیت استفاده پکیج آن بن : {pkg}",
+        ]
+        return '\n'.join(lines)
+
+    def format_ban_user_notice(self, ban: dict, display_name: str | None = None) -> str:
+        name = (display_name or "").strip() or "کاربر"
+        permanent = int(ban.get("ban_permanent") or 0) == 1
+        duration = "دائم" if permanent else f"{ban.get('ban_days') or '—'} روز"
+        jal, greg = self._format_ban_datetime(ban.get("banned_at"))
+        by = ban.get("banned_by")
+        by_s = f"@{by}" if by else "سازمان ملل"
+        pkg = "بله" if int(ban.get("unban_package") or 0) else "خیر"
+        lines = [
+            f"سلام {name} عزیز متاسفانه شما به دلیل نقض قوانین ربات جنگ جهانی از ربات و گروه @warworld3 بن شده اید..",
+            "",
+            f"توسط : {by_s}",
+            f"دلیل : {ban.get('ban_reason') or '—'}",
+            f"مدت : {duration}",
+            f"تاریخ (شمسی): {jal}",
+            f"تاریخ (میلادی): {greg}",
+            f"آیا شما قابلیت استفاده از پکیج آن بن را دارید؟ {pkg}",
+            f"کد بن : #{ban.get('ban_code') or '—'}",
+            "",
+            "در هنگامی که بن هستید شما فقط قابلیت استفاده از دکمه «تیکت» را دارید",
+            "",
+            "به هیچ وجه برای رفع مسدودیت به پیوی ادمین نرید و از بخش تیکت در ارتباط باشید🗣",
+        ]
+        return '\n'.join(lines)
 
     async def unban(self, actor: int, target: int) -> str:
         if not self.is_owner(actor):
             raise GameError("مجاز نیستید")
+        await self.ensure_ban_ticket_schema()
         await self.db.execute(
-            "UPDATE ng_players SET is_banned=0, ban_reason=NULL, banned_until=NULL WHERE player_id=$1",
-            (target,),
+            """UPDATE ng_players SET is_banned=0, ban_reason=NULL, banned_until=NULL,
+               ban_code=NULL, ban_days=NULL, ban_permanent=0, unban_package=0,
+               banned_by=NULL, banned_at=NULL WHERE player_id=$1""",
+            (int(target),),
         )
         await self.admin_log(actor, "unban", f"unban {target}")
         await self.broadcast_log("unban", f"✅ مسدودیت بازیکن {target} برداشته شد.")
         return "رفع مسدودیت انجام شد."
+
+    async def create_ticket(self, pid: int, body: str) -> tuple[int, str]:
+        await self.ensure_ban_ticket_schema()
+        body = (body or "").strip()
+        if len(body) < 3:
+            raise GameError("متن تیکت خیلی کوتاه است.")
+        if len(body) > 3000:
+            raise GameError("متن تیکت خیلی بلند است.")
+        # one open ticket at a time for banned users
+        open_row = await self.db.fetchrow(
+            "SELECT id FROM ng_tickets WHERE player_id=$1 AND status='open' ORDER BY id DESC LIMIT 1",
+            (int(pid),),
+        )
+        now = self._now_iso()
+        if open_row:
+            tid = int(open_row["id"])
+            await self.db.execute(
+                """INSERT INTO ng_ticket_messages (ticket_id, sender_id, is_admin, body, created_at)
+                   VALUES ($1,$2,0,$3,$4)""",
+                (tid, int(pid), body, now),
+            )
+            await self.db.execute(
+                "UPDATE ng_tickets SET updated_at=$1, last_user_msg_at=$1, unread_admin=1 WHERE id=$2",
+                (now, tid),
+            )
+            return tid, "پیام به تیکت باز قبلی اضافه شد."
+        # new ticket id
+        row = await self.db.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS n FROM ng_tickets")
+        tid = int((row or {}).get("n") or 1)
+        subj = body[:80]
+        await self.db.execute(
+            """INSERT INTO ng_tickets (id, player_id, status, subject, created_at, updated_at, last_user_msg_at, unread_admin)
+               VALUES ($1,$2,'open',$3,$4,$4,$4,1)""",
+            (tid, int(pid), subj, now),
+        )
+        await self.db.execute(
+            """INSERT INTO ng_ticket_messages (ticket_id, sender_id, is_admin, body, created_at)
+               VALUES ($1,$2,0,$3,$4)""",
+            (tid, int(pid), body, now),
+        )
+        return tid, "تیکت جدید ثبت شد."
+
+    async def list_tickets_for_user(self, pid: int) -> list[dict]:
+        await self.ensure_ban_ticket_schema()
+        return await self.db.fetch(
+            "SELECT * FROM ng_tickets WHERE player_id=$1 ORDER BY updated_at DESC LIMIT 20",
+            (int(pid),),
+        )
+
+    async def list_open_tickets(self) -> list[dict]:
+        await self.ensure_ban_ticket_schema()
+        return await self.db.fetch(
+            "SELECT * FROM ng_tickets WHERE status='open' ORDER BY updated_at DESC LIMIT 50"
+        )
+
+    async def list_unanswered_tickets(self) -> list[dict]:
+        """Open tickets with no admin reply yet or unread_admin=1."""
+        await self.ensure_ban_ticket_schema()
+        return await self.db.fetch(
+            """SELECT * FROM ng_tickets
+               WHERE status='open' AND (last_admin_msg_at IS NULL OR COALESCE(unread_admin,0)=1)
+               ORDER BY updated_at DESC LIMIT 50"""
+        )
+
+    async def get_ticket(self, ticket_id: int) -> dict | None:
+        await self.ensure_ban_ticket_schema()
+        return await self.db.fetchrow("SELECT * FROM ng_tickets WHERE id=$1", (int(ticket_id),))
+
+    async def ticket_messages(self, ticket_id: int, limit: int = 15) -> list[dict]:
+        await self.ensure_ban_ticket_schema()
+        rows = await self.db.fetch(
+            """SELECT * FROM ng_ticket_messages WHERE ticket_id=$1
+               ORDER BY id DESC LIMIT $2""",
+            (int(ticket_id), int(limit)),
+        )
+        return list(reversed(rows or []))
+
+    async def reply_ticket(self, ticket_id: int, sender_id: int, body: str, *, is_admin: bool) -> str:
+        await self.ensure_ban_ticket_schema()
+        t = await self.get_ticket(ticket_id)
+        if not t:
+            raise GameError("تیکت یافت نشد")
+        if t.get("status") != "open":
+            raise GameError("این تیکت بسته است")
+        body = (body or "").strip()
+        if len(body) < 1:
+            raise GameError("پیام خالی است")
+        if len(body) > 3000:
+            raise GameError("پیام خیلی بلند است")
+        if not is_admin and int(t["player_id"]) != int(sender_id):
+            raise GameError("دسترسی ندارید")
+        if is_admin and not self.is_owner(sender_id):
+            raise GameError("مجاز نیستید")
+        now = self._now_iso()
+        await self.db.execute(
+            """INSERT INTO ng_ticket_messages (ticket_id, sender_id, is_admin, body, created_at)
+               VALUES ($1,$2,$3,$4,$5)""",
+            (int(ticket_id), int(sender_id), 1 if is_admin else 0, body, now),
+        )
+        if is_admin:
+            await self.db.execute(
+                "UPDATE ng_tickets SET updated_at=$1, last_admin_msg_at=$1, unread_admin=0 WHERE id=$2",
+                (now, int(ticket_id)),
+            )
+        else:
+            await self.db.execute(
+                "UPDATE ng_tickets SET updated_at=$1, last_user_msg_at=$1, unread_admin=1 WHERE id=$2",
+                (now, int(ticket_id)),
+            )
+        return "✅ پیام ثبت شد."
+
+    async def close_ticket(self, ticket_id: int, actor: int) -> str:
+        if not self.is_owner(actor):
+            raise GameError("مجاز نیستید")
+        await self.ensure_ban_ticket_schema()
+        t = await self.get_ticket(ticket_id)
+        if not t:
+            raise GameError("تیکت یافت نشد")
+        now = self._now_iso()
+        await self.db.execute(
+            "UPDATE ng_tickets SET status='closed', closed_at=$1, closed_by=$2, updated_at=$1 WHERE id=$3",
+            (now, int(actor), int(ticket_id)),
+        )
+        return "تیکت بسته شد."
+
+    def format_ticket_thread(self, ticket: dict, messages: list[dict]) -> str:
+        lines = [
+            f"🎫 تیکت #{ticket.get('id')} — وضعیت: {ticket.get('status')}",
+            f"کاربر: {ticket.get('player_id')}",
+            f"موضوع: {ticket.get('subject') or '—'}",
+            "────────────",
+        ]
+        for m in messages:
+            who = "ادمین" if int(m.get("is_admin") or 0) else "کاربر"
+            lines.append(f"[{who}] {m.get('body')}")
+        return chr(10).join(lines)[:3500]
 
 
     async def ensure_bot_settings_table(self) -> None:
