@@ -237,9 +237,8 @@ def cancel_row():
 
 def banned_kb():
     """Only ticket button for banned users."""
-    from bale import MenuKeyboardMarkup, MenuKeyboardButton
     kb = MenuKeyboardMarkup()
-    kb.add(MenuKeyboardButton(BTN_TICKET))
+    kb.add(MenuKeyboardButton(BTN_TICKET), row=1)
     return kb
 
 
@@ -571,21 +570,62 @@ def register_handlers(bot, app_ctx: dict):
                 if err == "BANNED" or "مسدود" in err:
                     ban = await game.get_ban_info(pid)
                     notice = game.format_ban_user_notice(ban, display) if ban else "شما مسدود شده‌اید."
-                    # Allow ticket pending flows to continue
                     early_st = await _get_pending(game, pid)
                     early_kind = (early_st or {}).get("kind") or ""
-                    if early_kind in ("ticket_new_body", "ticket_reply_body"):
-                        # fall through WITHOUT full access — handle pending only below
-                        pass
-                    elif text in ("/start", "شروع", "منو", "menu", BTN_TICKET, "تیکت"):
+                    # Cancel while banned
+                    if text in ("لغو", "cancel", "/cancel", "❌ انصراف", "انصراف"):
+                        await _clear_pending(game, pid)
+                        await reply(message, "عملیات لغو شد.", banned_kb())
+                        return
+                    # Ticket message body while banned — handle here and STOP (no normal menu)
+                    if early_kind == "ticket_new_body":
+                        await _clear_pending(game, pid)
+                        try:
+                            tid, msg = await game.create_ticket(pid, text)
+                            await reply(
+                                message,
+                                f"✅ {msg}\nشناسه تیکت: #{tid}",
+                                ik(ticket_user_inline()),
+                            )
+                            try:
+                                if hasattr(bot, "send_message"):
+                                    for oid in await game.all_owner_ids():
+                                        try:
+                                            await bot.send_message(
+                                                int(oid),
+                                                f"یک تیکت جدید دریافت کرده‌اید : #{tid}",
+                                                components=ik([[("باز کردن", f"ng:otix:open:{tid}")]]),
+                                            )
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                log.exception("notify owners new ticket")
+                        except GameError as ge:
+                            await reply(message, f"❌ {ge}", banned_kb())
+                        except Exception:
+                            log.exception("banned ticket_new_body")
+                            await reply(message, "❌ ثبت تیکت ناموفق بود. دوباره تلاش کنید.", banned_kb())
+                        return
+                    if early_kind == "ticket_reply_body":
+                        tid = int((early_st or {}).get("ticket_id") or 0)
+                        await _clear_pending(game, pid)
+                        try:
+                            msg = await game.reply_ticket(tid, pid, text, is_admin=False)
+                            await reply(message, msg, ik(ticket_user_inline()))
+                        except GameError as ge:
+                            await reply(message, f"❌ {ge}", banned_kb())
+                        except Exception:
+                            log.exception("banned ticket_reply_body")
+                            await reply(message, "❌ ارسال پاسخ ناموفق بود.", banned_kb())
+                        return
+                    if text in ("/start", "شروع", "منو", "menu", BTN_TICKET, "تیکت"):
                         if text in (BTN_TICKET, "تیکت"):
                             await reply(message, "بخش تیکت:", ik(ticket_user_inline()))
                         else:
                             await reply(message, notice, banned_kb())
                         return
-                    else:
-                        # ignore random messages while banned
-                        return
+                    # ignore random messages while banned — never show main menu
+                    return
                 else:
                     await reply(message, f"❌ {e}")
                     return
@@ -692,7 +732,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("📝 پیام /start", "ng:ostart"), ("ℹ️ درباره ما", "ng:oabout")],
                     [("🧪 حساب تستی", "ng:otest"), ("⚙️ عضویت اجباری", "ng:oforce")],
                     [("بن کاربر", "ng:oban"), ("آنبن کاربر", "ng:ounban")],
-                    [("🎫 تیکت‌ها", "ng:otix")],
+                    [("🎫 تیکت‌ها", "ng:otix"), ("🔍 جستجوی بن", "ng:obansearch")],
                     [("تغییر پول کشور", "ng:omoney")],
                     [("💰 گرفتن مالیات", "ng:otax"), ("⚖️ محکوم کردن کشور", "ng:ocondemn")],
                     [("❤️ دیدن HP ها", "ng:ohp"), ("🏅 رنکینگ", "ng:orank")],
@@ -1122,6 +1162,29 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 # ── Ban wizard (from player profile) ─────────────────
+                if kind == "ban_search_code":
+                    await _clear_pending(game, pid)
+                    code = text.strip().lstrip("#")
+                    try:
+                        ban = await game.find_ban_by_code(code)
+                    except Exception:
+                        log.exception("ban_search_code")
+                        await reply(message, "❌ خطا در جستجو.", main_kb(owner))
+                        return
+                    if not ban:
+                        await reply(message, f"❌ بن با کد #{code} یافت نشد.", main_kb(owner))
+                        return
+                    card = game.format_ban_search_card(ban)
+                    tid = int(ban.get("player_id") or 0)
+                    rows = []
+                    if tid:
+                        rows.append([("👤 پروفایل کاربر", f"ng:ou:{tid}")])
+                        if int(ban.get("is_banned") or 0) == 1:
+                            rows.append([("✅ آن‌بن", f"ng:ouunban:{tid}")])
+                    rows.append(back_row())
+                    await reply(message, card, ik(rows))
+                    return
+
                 if kind == "ban_wizard_code":
                     code = text.strip().lstrip("#")
                     if not code or len(code) > 32:
@@ -2126,7 +2189,15 @@ def register_handlers(bot, app_ctx: dict):
         except Exception:
             log.exception("on_message")
             try:
-                await message.reply("خطای داخلی. دوباره تلاش کنید.", components=main_kb(False))
+                pid_ex = _uid(message)
+                ban_ex = None
+                try:
+                    if pid_ex:
+                        ban_ex = await game.get_ban_info(pid_ex)
+                except Exception:
+                    ban_ex = None
+                kb_ex = banned_kb() if ban_ex else main_kb(False)
+                await message.reply("خطای داخلی. دوباره تلاش کنید.", components=kb_ex)
             except Exception:
                 pass
 
@@ -2226,7 +2297,7 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             # owner callbacks — server-side authorization
-            if data.startswith("ng:dcd") or data.startswith("ng:orec") or data.startswith("ng:o") or data.startswith("ng:owar") or data.startswith("ng:onuke") or data.startswith("ng:ostmt") or data.startswith("ng:onpt") or data.startswith("ng:ologs") or data.startswith("ng:ostart") or data.startswith("ng:oabout") or data.startswith("ng:oban") or data.startswith("ng:ounban") or data.startswith("ng:otix") or data.startswith("ng:tix") or data.startswith("ng:omoney") or data.startswith("ng:oreset") or data.startswith("ng:sapp") or data.startswith("ng:srej") or data.startswith("ng:nptok") or data.startswith("ng:nptno") or data.startswith("ng:logtoggle") or data.startswith("ng:otest") or data.startswith("ng:oforce") or data.startswith("ng:ou") or data.startswith("ng:otax") or data.startswith("ng:ocondemn") or data.startswith("ng:oureset") or data.startswith("ng:oally") or data.startswith("ng:oaway") or data.startswith("ng:orefstats") or data.startswith("ng:odbl") or data.startswith("ng:oudbl") or data.startswith("ng:olaws") or data.startswith("ng:lawok") or data.startswith("ng:lawno") or data.startswith("ng:oprice") or data.startswith("ng:odisc") or data.startswith("ng:ogiveall") or data.startswith("ng:odaily") or data.startswith("ng:ohp") or data.startswith("ng:osethp") or data.startswith("ng:oleg") or data.startswith("ng:owallet") or data.startswith("ng:olegprices") or data.startswith("ng:odonate") or data.startswith("ng:donrev"):
+            if data.startswith("ng:dcd") or data.startswith("ng:orec") or data.startswith("ng:o") or data.startswith("ng:owar") or data.startswith("ng:onuke") or data.startswith("ng:ostmt") or data.startswith("ng:onpt") or data.startswith("ng:ologs") or data.startswith("ng:ostart") or data.startswith("ng:oabout") or data.startswith("ng:oban") or data.startswith("ng:obansearch") or data.startswith("ng:ounban") or data.startswith("ng:otix") or data.startswith("ng:tix") or data.startswith("ng:omoney") or data.startswith("ng:oreset") or data.startswith("ng:sapp") or data.startswith("ng:srej") or data.startswith("ng:nptok") or data.startswith("ng:nptno") or data.startswith("ng:logtoggle") or data.startswith("ng:otest") or data.startswith("ng:oforce") or data.startswith("ng:ou") or data.startswith("ng:otax") or data.startswith("ng:ocondemn") or data.startswith("ng:oureset") or data.startswith("ng:oally") or data.startswith("ng:oaway") or data.startswith("ng:orefstats") or data.startswith("ng:odbl") or data.startswith("ng:oudbl") or data.startswith("ng:olaws") or data.startswith("ng:lawok") or data.startswith("ng:lawno") or data.startswith("ng:oprice") or data.startswith("ng:odisc") or data.startswith("ng:ogiveall") or data.startswith("ng:odaily") or data.startswith("ng:ohp") or data.startswith("ng:osethp") or data.startswith("ng:oleg") or data.startswith("ng:owallet") or data.startswith("ng:olegprices") or data.startswith("ng:odonate") or data.startswith("ng:donrev"):
                 if not owner:
                     await out("❌ دسترسی مجاز نیست.")
                     return
@@ -4822,6 +4893,13 @@ def register_handlers(bot, app_ctx: dict):
                 _pending[pid] = {"kind": "ban_user"}
                 await out("آیدی عددی یا @username بازیکن را بفرستید:")
                 return
+            if data == "ng:obansearch":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                await _set_pending(game, pid, "ban_search_code")
+                await out("کد بن را وارد کنید:", ik([cancel_row()]), force_new=True)
+                return
             if data == "ng:ounban":
                 _pending[pid] = {"kind": "unban_user"}
                 await out("آیدی عددی یا @username برای رفع بن:")
@@ -4842,7 +4920,7 @@ def register_handlers(bot, app_ctx: dict):
                 await out("تیکت‌های شما:", ik(kb), force_new=True)
                 return
             if data == "ng:tix:new":
-                _pending[pid] = {"kind": "ticket_new_body"}
+                await _set_pending(game, pid, "ticket_new_body")
                 await out("متن تیکت خود را بنویسید:", ik([cancel_row()]), force_new=True)
                 return
             if data.startswith("ng:tix:open:"):
@@ -4868,7 +4946,7 @@ def register_handlers(bot, app_ctx: dict):
                 if t.get("status") != "open":
                     await out("این تیکت بسته است.", force_new=True)
                     return
-                _pending[pid] = {"kind": "ticket_reply_body", "ticket_id": tid, "is_admin": False}
+                await _set_pending(game, pid, "ticket_reply_body", ticket_id=tid, is_admin=False)
                 await out("پیام خود را بنویسید:", ik([cancel_row()]), force_new=True)
                 return
 
