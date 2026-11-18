@@ -3867,12 +3867,18 @@ class Game:
         t = await self.get_ticket(ticket_id)
         if not t:
             raise GameError("تیکت یافت نشد")
+        if (t.get("status") or "") == "closed":
+            return "این تیکت از قبل بسته بود."
         now = self._now_iso()
-        await self.db.execute(
-            "UPDATE ng_tickets SET status='closed', closed_at=$1, closed_by=$2, updated_at=$1 WHERE id=$3",
+        result = await self.db.execute(
+            "UPDATE ng_tickets SET status='closed', closed_at=$1, closed_by=$2, updated_at=$1 WHERE id=$3 AND status='open'",
             (now, int(actor), int(ticket_id)),
         )
-        return "تیکت بسته شد."
+        # re-check
+        t2 = await self.get_ticket(ticket_id)
+        if t2 and (t2.get("status") or "") == "closed":
+            return "تیکت بسته شد."
+        raise GameError("بستن تیکت در دیتابیس اعمال نشد.")
 
     def format_ticket_thread(self, ticket: dict, messages: list[dict]) -> str:
         lines = [
