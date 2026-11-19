@@ -67,7 +67,7 @@ class ControlService:
                 maritime_open INTEGER NOT NULL DEFAULT 1,
                 internet_on INTEGER NOT NULL DEFAULT 1,
                 satisfaction REAL NOT NULL DEFAULT 70,
-                base_daily_income REAL NOT NULL DEFAULT 70000000,
+                base_daily_income REAL NOT NULL DEFAULT 100000000,
                 leader_crisis_until TEXT,
                 updated_at TEXT
             )""",

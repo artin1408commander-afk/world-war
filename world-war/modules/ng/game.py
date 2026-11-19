@@ -145,10 +145,10 @@ class Game:
             await self.legendary.ensure_tables()
             try:
                 await self.db.execute(
-                    "UPDATE ng_country_control SET base_daily_income=70000000 WHERE COALESCE(base_daily_income,0)<>70000000"
+                    "UPDATE ng_country_control SET base_daily_income=100000000 WHERE COALESCE(base_daily_income,0)<>100000000"
                 )
             except Exception:
-                log.exception("force_base_daily_70m")
+                log.exception("force_base_daily_100m")
 
             try:
                 n = await self.legendary.expire_all_active_effects("bootstrap")
@@ -258,13 +258,13 @@ class Game:
                     """
                     UPDATE ng_shop_catalog SET
                         category=$2, name_fa=$3, description_fa=$4,
-                        max_per_order=$5, power_score=$6, daily_income=$7,
-                        maintenance=$8, is_building=$9
+                        unit_price=$5, max_per_order=$6, power_score=$7, daily_income=$8,
+                        maintenance=$9, is_building=$10
                     WHERE item_code=$1
                     """,
                     (
                         c["item_code"], c["category"], c["name_fa"], c["description_fa"],
-                        c["max_per_order"], c["power_score"],
+                        c["unit_price"], c["max_per_order"], c["power_score"],
                         c["daily_income"], c["maintenance"], c["is_building"],
                     ),
                 )
@@ -2090,7 +2090,7 @@ class Game:
                 log.exception("effective_attack_cooldown_sec")
         return int(base)
 
-    BASE_DAILY_GRANT = 70_000_000  # fixed daily grant per owned country (Tehran day)
+    BASE_DAILY_GRANT = 100_000_000  # fixed daily grant per owned country (Tehran day)
     REF_INVITEE_REWARD = 30_000_000
     REF_REFERRER_REWARD = 30_000_000
     MAX_LOOT_RATIO = 0.08  # max 8% of defender treasury

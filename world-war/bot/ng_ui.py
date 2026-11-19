@@ -467,6 +467,35 @@ async def send_legendary_shop(target_msg, bot, game, pid: int, out_text=None):
         )
 
 
+
+_GROUP_JOIN_WARNED: set[tuple[int, int]] = set()
+
+
+def _is_bot_user(obj) -> bool:
+    u = getattr(obj, "author", None) or getattr(obj, "from_user", None) or getattr(obj, "user", None) or obj
+    if u is None:
+        return False
+    for attr in ("is_bot", "bot", "is_bot_user"):
+        v = getattr(u, attr, None)
+        if v is True:
+            return True
+    return False
+
+
+def _is_group_chat(message) -> bool:
+    chat = getattr(message, "chat", None)
+    if chat is None:
+        return False
+    t = str(getattr(chat, "type", None) or getattr(chat, "chat_type", None) or "").lower()
+    if t in ("group", "supergroup", "channel"):
+        return True
+    cid = getattr(chat, "id", None) or getattr(chat, "chat_id", None)
+    try:
+        return int(cid) < 0
+    except Exception:
+        return False
+
+
 def register_handlers(bot, app_ctx: dict):
     game = app_ctx["game"]
     settings = app_ctx["settings"]
@@ -480,9 +509,9 @@ def register_handlers(bot, app_ctx: dict):
     async def require_membership(pid, message_or_cq, is_callback=False, *, force: bool = False):
         """Block non-members when forced membership is enabled.
 
-        - First interaction: live API check
-        - Later: cache trusted up to 3 hours
-        - force=True (تأیید عضویت): always live check
+        Group chats: at most one soft notice per user per group; never spam.
+        Private chats: always block gameplay and show join buttons.
+        Never process/reply to the bot's own messages.
         """
         if not await game.membership_enabled():
             return True
@@ -509,7 +538,50 @@ def register_handlers(bot, app_ctx: dict):
                 missing.append(ch)
         if not missing and not api_errors:
             return True
-        # Build prompt
+
+        # Determine if this interaction is in a group
+        src = message_or_cq
+        if is_callback:
+            src = getattr(message_or_cq, "message", None) or message_or_cq
+        in_group = False
+        try:
+            in_group = _is_group_chat(src) if src is not None else False
+        except Exception:
+            in_group = False
+
+        chat_id = None
+        try:
+            chat_id = _extract_chat_id(src)
+        except Exception:
+            chat_id = None
+
+        # In groups: only one notice per (user, group); no further replies in group
+        if in_group and not force:
+            key = (int(pid), int(chat_id) if chat_id is not None else 0)
+            if key in _GROUP_JOIN_WARNED:
+                return False
+            _GROUP_JOIN_WARNED.add(key)
+            # short one-time group notice (no big button spam if possible)
+            try:
+                lines = ["🔒 برای استفاده از ربات در پیوی، ابتدا در کانال/گروه اجباری عضو شوید."]
+                show = missing if missing else api_errors
+                for ch in show[:3]:
+                    title = ch.get("title") or "کانال/گروه"
+                    link = (ch.get("invite_link") or "").strip()
+                    if link:
+                        lines.append(f"• {title}: {link}")
+                    else:
+                        lines.append(f"• {title}")
+                body = "\n".join(lines)
+                if hasattr(src, "reply"):
+                    await src.reply(body[:3500])
+                elif chat_id is not None and hasattr(bot, "send_message"):
+                    await bot.send_message(chat_id, body[:3500])
+            except Exception:
+                log.exception("group join once-notice failed")
+            return False
+
+        # Private (or forced re-check): full prompt with buttons
         lines = [
             "🔒 برای استفاده از ربات ابتدا عضو شوید.",
             "",
@@ -539,28 +611,32 @@ def register_handlers(bot, app_ctx: dict):
         body = "\n".join(lines)
         try:
             if is_callback:
-                # answer callback if possible
                 try:
                     if hasattr(message_or_cq, "answer"):
                         await message_or_cq.answer("ابتدا عضو شوید", show_alert=False)
                 except Exception:
                     pass
                 msg = getattr(message_or_cq, "message", None)
+                # Prefer private DM for join prompt when possible
+                try:
+                    if hasattr(bot, "send_message"):
+                        await bot.send_message(int(pid), body[:3500], components=ik(rows))
+                        return False
+                except Exception:
+                    log.debug("dm join prompt failed, fallback reply", exc_info=True)
                 if msg is not None and hasattr(msg, "reply"):
                     await msg.reply(body[:3500], components=ik(rows))
                 else:
-                    # fallback via bot
-                    chat_id = None
-                    try:
-                        chat_id = _extract_chat_id(getattr(message_or_cq, "message", None))
-                    except Exception:
-                        chat_id = None
-                    if chat_id is not None and hasattr(bot, "send_message"):
-                        await bot.send_message(chat_id, body[:3500], components=ik(rows))
+                    cid2 = _extract_chat_id(msg)
+                    if cid2 is not None and hasattr(bot, "send_message"):
+                        await bot.send_message(cid2, body[:3500], components=ik(rows))
             else:
+                # private message path
                 await reply(message_or_cq, body, ik(rows))
         except Exception:
             log.exception("require_membership prompt failed")
+        return False
+
         return False
 
     @bot.listen("on_ready")
@@ -570,6 +646,12 @@ def register_handlers(bot, app_ctx: dict):
     @bot.listen("on_message")
     async def on_message(message):
         try:
+            # Never react to the bot's own messages (prevents join-loop in groups)
+            try:
+                if _is_bot_user(message):
+                    return
+            except Exception:
+                pass
             # Auto-detect reserved alliance groups named "c." when bot is admin
             try:
                 await game.alliance_groups.try_auto_from_message(bot, message)
