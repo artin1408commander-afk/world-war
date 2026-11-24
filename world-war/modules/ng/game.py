@@ -957,14 +957,14 @@ class Game:
 
     async def checkout(self, pid: int, country_code: str) -> str:
         await self.assert_can_shop(pid)
+        checkout_key = None
         try:
-            from modules.ng.store_service import acquire_checkout_lock
-            if not acquire_checkout_lock(pid):
-                raise GameError("⏳ درخواست خرید قبلی هنوز در حال پردازش است. چند لحظه صبر کنید.")
-        except GameError:
-            raise
+            from modules.ng.purchase_service import begin_checkout, finalize_checkout_dedup
+            checkout_key = await begin_checkout(self.db, pid)
+        except ValueError as e:
+            raise GameError(str(e)) from e
         except Exception:
-            pass
+            log.exception("checkout begin")
         _, total, items = await self.cart_view(pid, country_code)
         if not items:
             raise GameError("سبد خالی است.")
@@ -1020,7 +1020,15 @@ class Game:
             log.exception("sync cash after checkout")
         label = await self.country_label(country_code)
         await self.broadcast_log("buy", f"🛒 کشور {label} یک خرید جدید انجام داد.\nمبلغ: {int(total):,}")
-        return f"✅ خرید موفق\nمبلغ: {int(total):,}"
+        try:
+            if checkout_key:
+                from modules.ng.purchase_service import finalize_checkout_dedup
+                await finalize_checkout_dedup(
+                    self.db, client_key=checkout_key, pid=pid, country_code=country_code, total=total
+                )
+        except Exception:
+            log.exception("checkout dedup finalize")
+        return f"✅ خرید موفق\nمبلغ: {int(total):,}\n🧾 رسید: {checkout_key or '-'}"
 
     async def recalc_income(self, code: str) -> None:
         inv = await self.db.fetch(
@@ -4591,6 +4599,7 @@ class Game:
             raise GameError("کشور خریدار معتبر نیست.")
         try:
             from modules.ng.oil_trade import execute_oil_trade
+            import uuid
             msg = await execute_oil_trade(
                 self.db,
                 seller_code=seller_code,
@@ -4599,6 +4608,7 @@ class Game:
                 unit_price=unit_price,
                 seller_pid=seller_pid,
                 buyer_pid=int(buyer["owner_player_id"]),
+                client_key=f"oil_{seller_pid}_{buyer_code}_{int(barrels)}_{uuid.uuid4().hex[:10]}",
             )
         except ValueError as e:
             raise GameError(str(e)) from e
@@ -4651,61 +4661,27 @@ class Game:
         return n
 
     async def inventory_text(self, code: str) -> str:
-        rows = await self.db.fetch(
-            "SELECT * FROM ng_inventory WHERE country_code=$1 AND quantity>0 ORDER BY item_code",
-            (code,),
-        )
-        cat_title = {
-            "ground": "⚔️ نیروی زمینی",
-            "air": "✈️ نیروی هوایی",
-            "sea": "🚢 نیروی دریایی",
-            "defense": "🛡 پدافند",
-            "missile": "🚀 موشک‌ها",
-            "specialist": "🧠 متخصصان",
-            "cyber": "💻 فناوری/سایبر",
-            "nuclear": "☢️ هسته‌ای",
-            "mine": "⛏ منابع",
-            "infra": "🏗 زیرساخت",
-            "other": "📦 سایر تجهیزات",
-        }
-        lines = ["📦 انبار کشور", ""]
+        from modules.ng.inventory_service import build_inventory_text
+        oil = None
         try:
             from modules.ng.oil_resource import get_stock
             oil = await get_stock(self.db, code)
-            lines.append(f"🛢 نفت ذخیره‌شده: {int(oil):,} بشکه")
-            lines.append("")
         except Exception:
-            pass
-        if not rows:
-            lines.append("خالی است.")
-            return "\n".join(lines)
-        by_cat: dict = {}
-        for r in rows:
-            meta = self._cat.get(r["item_code"]) or eq.meta(r["item_code"]) or {
-                "name_fa": r["item_code"], "category": "other"
-            }
-            cat = meta.get("category") or "other"
-            by_cat.setdefault(cat, []).append((meta, r))
-        order = ["ground", "air", "sea", "missile", "defense", "specialist", "cyber", "nuclear", "mine", "infra", "other"]
-        for cat in order:
-            items = by_cat.get(cat)
-            if not items:
-                continue
-            lines.append(cat_title.get(cat, CAT_FA.get(cat, cat)))
-            for meta, r in items:
-                q = float(r["quantity"] or 0)
-                # Player-facing whole units for countable equipment
-                if q >= 1:
-                    q_show = f"{int(q):,} عدد"
-                elif q > 0:
-                    # residual fraction under 1 shown as کمتر از ۱ (data preserved)
-                    q_show = "کمتر از ۱ عدد"
-                else:
-                    continue
-                name = meta.get("name_fa") or r["item_code"]
-                lines.append(f"• {name}: {q_show}")
-            lines.append("")
-        return "\n".join(lines).rstrip()
+            oil = None
+
+        def _lookup(ic: str):
+            meta = self._cat.get(ic)
+            if meta:
+                return meta
+            try:
+                return eq.meta(ic)
+            except Exception:
+                return None
+
+        return await build_inventory_text(
+            self.db, code, cat_lookup=_lookup, oil_stock=oil, cat_fa=CAT_FA if "CAT_FA" in globals() else None,
+        )
+
 
 
     async def cart_set(self, pid: int, item: str, qty: float) -> str:

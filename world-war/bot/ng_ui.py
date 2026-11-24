@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from modules.ng.menu_session import MENU_SESSIONS, EXPIRED_MENU_TEXT
+from modules.ng.menu_session import MENU_SESSIONS, EXPIRED_MENU_TEXT, FORBIDDEN_MENU_TEXT
 
 from pathlib import Path
 
@@ -2357,6 +2357,12 @@ def register_handlers(bot, app_ctx: dict):
                     mid_to = getattr(msg_to, "message_id", None) or getattr(msg_to, "id", None)
                 if data.startswith("ng:") and mid_to is not None:
                     key = (int(pid), int(mid_to))
+                    if not MENU_SESSIONS.owned_by(pid, mid_to):
+                        try:
+                            await cq.answer(FORBIDDEN_MENU_TEXT, show_alert=True)
+                        except Exception:
+                            pass
+                        return
                     if key in MENU_SESSIONS._sessions and not MENU_SESSIONS.is_alive(pid, mid_to):
                         try:
                             await cq.answer(EXPIRED_MENU_TEXT, show_alert=True)

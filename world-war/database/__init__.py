@@ -17,6 +17,14 @@ async def create_database(settings: Settings) -> Database:
             "DATABASE_URL is empty. Refusing to start without PostgreSQL."
         )
     mode = (settings.database_mode or "postgres").lower()
+    # Opt-in SQLite only for isolated unit tests (never production).
+    import os
+    if mode in ("sqlite", "sqlite3") and os.getenv("WW_TEST_SQLITE", "").strip() in ("1", "true", "yes"):
+        from database.sqlite import SQLiteDatabase
+        db = SQLiteDatabase(str(settings.sqlite_path))
+        await db.connect()
+        await db.migrate()
+        return db
     if mode not in ("postgres", "postgresql", "pg"):
         raise RuntimeError(
             f"Unsupported DATABASE_MODE={settings.database_mode!r}. PostgreSQL only."
