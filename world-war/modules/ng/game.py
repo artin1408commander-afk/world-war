@@ -4722,7 +4722,7 @@ class Game:
             f"موجودی: {int(stock):,} بشکه\n"
             f"قیمت مرجع بازار: {price:,}\n"
             f"ضریب بازار: ×{float(mult):.2f}\n\n"
-            "هر پالایشگاه/میدان نفتی هر شب ۱۲ تهران: ۱۲۰ بشکه\nنفت خریداری‌شده در دارایی ذخیره می‌شود."
+            "پالایشگاه نفت و میدان نفتی فقط بشکه می‌دهند (هر شب تهران).\nنفت خریداری‌شده در دارایی ذخیره می‌شود."
         )
 
     async def produce_oil_daily_all(self) -> int:
@@ -5648,7 +5648,7 @@ class Game:
             )
             daily_oil = daily_production_from_inventory(inv or [])
             lines.insert(-3, f"🛢 نفت ذخیره‌شده: {int(stock):,} بشکه")
-            lines.insert(-3, f"🏭 تولید نفت روزانه: {int(daily_oil):,} بشکه (هر پالایشگاه ۱۲۰)")
+            lines.insert(-3, f"🏭 تولید نفت روزانه: {int(daily_oil):,} بشکه (پالایشگاه/میدان نفتی)")
             lines.insert(-3, "")
         except Exception:
             log.exception("economy_card oil")
