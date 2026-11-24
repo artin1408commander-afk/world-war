@@ -1148,6 +1148,22 @@ def register_handlers(bot, app_ctx: dict):
                         msg = f"❌ {e}"
                     await reply(message, msg, main_kb(owner))
                     return
+                if kind == "aid_oil_amount":
+                    try:
+                        barrels = int(float(parse_amount(text)))
+                    except Exception:
+                        await reply(message, "مقدار نامعتبر.", ik([cancel_row()]))
+                        return
+                    try:
+                        msg = await game.aid_oil(code, st["dst"], barrels, pid)
+                        await _clear_pending(game, pid)
+                        await reply(message, msg, main_kb(owner))
+                    except GameError as e:
+                        await reply(message, f"❌ {e}", ik([cancel_row()]))
+                    except Exception:
+                        log.exception("aid_oil_amount")
+                        await reply(message, "❌ خطا در کمک نفتی.", ik([cancel_row()]))
+                    return
                 if kind == "aid_money_amount":
                     _pending.pop(pid, None)
                     try:
@@ -2074,6 +2090,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 rows = [
                     [("💰 کمک مالی", "ng:trade:money"), ("📦 کمک نظامی", "ng:trade:army")],
+                        [("🛢 کمک نفتی", "ng:trade:oil")],
                     back_row(),
                 ]
                 await reply(message, "🚢 تجارت و کمک بین کشورها", ik(rows))
@@ -2087,6 +2104,7 @@ def register_handlers(bot, app_ctx: dict):
                 rows = [
                     [("🌍 فهرست کشورها", "ng:diplo:list")],
                     [("💰 کمک مالی", "ng:trade:money"), ("📦 کمک نظامی", "ng:trade:army")],
+                        [("🛢 کمک نفتی", "ng:trade:oil")],
                     [("🤝 اتحادها", "ng:go:ally")],
                     back_row(),
                 ]
@@ -2650,6 +2668,7 @@ def register_handlers(bot, app_ctx: dict):
                     rows = [
                         [("🌍 فهرست کشورها", "ng:diplo:list")],
                         [("💰 کمک مالی", "ng:trade:money"), ("📦 کمک نظامی", "ng:trade:army")],
+                        [("🛢 کمک نفتی", "ng:trade:oil")],
                         [("🤝 اتحادها", "ng:go:ally")],
                         back_row(),
                     ]
@@ -2682,6 +2701,7 @@ def register_handlers(bot, app_ctx: dict):
                     nav_push(pid, "trade")
                     rows = [
                         [("💰 کمک مالی", "ng:trade:money"), ("📦 کمک نظامی", "ng:trade:army")],
+                        [("🛢 کمک نفتی", "ng:trade:oil")],
                         back_row(),
                     ]
                     await out("🚢 تجارت و کمک بین کشورها", ik(rows))
@@ -3575,6 +3595,7 @@ def register_handlers(bot, app_ctx: dict):
                     lines.append(f"... و {len(owned)-40} مورد دیگر")
                 await out(chr(10).join(lines), ik([
                     [("💰 کمک مالی", "ng:trade:money"), ("📦 کمک نظامی", "ng:trade:army")],
+                        [("🛢 کمک نفتی", "ng:trade:oil")],
                     back_row(),
                 ]))
                 return
@@ -3636,6 +3657,27 @@ def register_handlers(bot, app_ctx: dict):
                 rows = [[(f"{c['flag']} {c['name_fa']}", f"ng:aidm:{c['country_code']}")] for c in countries]
                 rows.append(back_row())
                 await out("مقصد کمک مالی:", ik(rows))
+                return
+            if data == "ng:trade:oil":
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                countries = [c for c in await game.list_countries() if c.get("owner_player_id") and c["country_code"] != code]
+                rows = [[(f"{c['flag']} {c['name_fa']}", f"ng:aido:{c['country_code']}")] for c in countries]
+                rows.append(back_row())
+                await out("مقصد کمک نفتی (بشکه):", ik(rows))
+                return
+            if data.startswith("ng:aido:"):
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                await _set_pending(game, pid, "aid_oil_amount", dst=data.split(":")[-1])
+                try:
+                    from modules.ng.oil_resource import get_stock
+                    st = await get_stock(game.db, code)
+                except Exception:
+                    st = 0
+                await out(f"موجودی نفت شما: {int(st):,} بشکه\nتعداد بشکه ارسالی را بنویسید:", ik([cancel_row()]))
                 return
             if data == "ng:trade:army":
                 if not code:

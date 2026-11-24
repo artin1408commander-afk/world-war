@@ -1012,6 +1012,17 @@ class Game:
                             (int(nid["id"]), country_code, it["item_code"], now),
                         )
             await tx.execute("DELETE FROM ng_cart WHERE player_id=$1", (pid,))
+        # Oil bought in shop must land in oil stock (assets), not only generic inventory line
+        try:
+            from modules.ng.oil_resource import add_stock, RES_OIL_ITEM
+            oil_qty = 0.0
+            for it in items:
+                if str(it.get("item_code") or "") == RES_OIL_ITEM:
+                    oil_qty += float(it.get("quantity") or 0)
+            if oil_qty > 0:
+                await add_stock(self.db, country_code, oil_qty)
+        except Exception:
+            log.exception("credit oil stock after checkout")
         await self.recalc_income(country_code)
         await self.log_activity("buy", f"خرید به مبلغ {int(total):,}", country_code, pid)
         try:
@@ -4570,6 +4581,7 @@ class Game:
             f"🏙 پایتخت: {c['capital_fa']}",
             f"💵 پول: {c['currency_name_fa']}",
             f"💰 خزانه: {int(float(c['treasury'])):,}",
+            # oil lines filled below after parts built
             f"📈 درآمد روزانه: {int(float(c['daily_income'])):,}",
             f"📉 هزینه روزانه: {int(float(c['daily_expense'])):,}",
             hp_line,
@@ -4577,6 +4589,18 @@ class Game:
             f"☢ {npt}",
             f"بازیکن: {'دارد' if c.get('owner_player_id') else 'آزاد'}",
         ]
+        try:
+            from modules.ng.oil_resource import get_stock, daily_production_from_inventory
+            stock = await get_stock(self.db, code)
+            inv = await self.db.fetch(
+                "SELECT item_code, quantity FROM ng_inventory WHERE country_code=$1",
+                (code,),
+            )
+            daily_oil = daily_production_from_inventory(inv or [])
+            parts.insert(-1, f"🛢 نفت ذخیره‌شده: {int(stock):,} بشکه")
+            parts.insert(-1, f"🏭 تولید نفت روزانه: {int(daily_oil):,} بشکه")
+        except Exception:
+            log.exception("country_card oil")
         try:
             oid = c.get("owner_player_id")
             if oid:
@@ -4611,7 +4635,45 @@ class Game:
 
 
 
+    async def aid_oil(self, src: str, dst: str, barrels: float, pid: int) -> str:
+        """Transfer oil barrels from src country to dst (aid)."""
+        from modules.ng.oil_resource import get_stock, add_stock
+        if src == dst:
+            raise GameError("مبدا و مقصد یکسان است.")
+        barrels = float(int(float(barrels)))
+        if barrels <= 0:
+            raise GameError("مقدار نفت نامعتبر است.")
+        c = await self.db.fetchrow(
+            "SELECT owner_player_id FROM ng_countries WHERE country_code=$1",
+            (src,),
+        )
+        if not c or int(c.get("owner_player_id") or 0) != int(pid):
+            raise GameError("مالکیت کشور مبدأ معتبر نیست.")
+        d = await self.db.fetchrow(
+            "SELECT owner_player_id FROM ng_countries WHERE country_code=$1",
+            (dst,),
+        )
+        if not d or d.get("owner_player_id") is None:
+            raise GameError("کشور مقصد معتبر نیست.")
+        stock = await get_stock(self.db, src)
+        if stock + 1e-9 < barrels:
+            raise GameError(f"نفت کافی نیست. موجودی: {int(stock):,} بشکه")
+        await add_stock(self.db, src, -barrels)
+        await add_stock(self.db, dst, barrels)
+        await self.log_activity(
+            "aid_oil",
+            f"کمک نفت {int(barrels):,} بشکه به {dst}",
+            src,
+            pid,
+        )
+        return (
+            f"✅ کمک نفتی انجام شد\n"
+            f"🛢 {int(barrels):,} بشکه\n"
+            f"از {src} → {dst}"
+        )
+
     async def trade_oil(
+
         self, seller_code: str, buyer_code: str, barrels: float, unit_price: float, seller_pid: int
     ) -> str:
         buyer = await self.db.fetchrow(
@@ -4660,7 +4722,7 @@ class Game:
             f"موجودی: {int(stock):,} بشکه\n"
             f"قیمت مرجع بازار: {price:,}\n"
             f"ضریب بازار: ×{float(mult):.2f}\n\n"
-            "پالایشگاه‌ها و میدان نفتی هر روز (تهران) نفت تولید می‌کنند."
+            "هر پالایشگاه/میدان نفتی هر شب ۱۲ تهران: ۱۲۰ بشکه\nنفت خریداری‌شده در دارایی ذخیره می‌شود."
         )
 
     async def produce_oil_daily_all(self) -> int:
@@ -5573,9 +5635,23 @@ class Game:
             f"⚙️ ضریب شرایط: {mod:.2f}",
             f"⚖️ برآورد خالص روزانه: {int(est):,}",
             "",
+            # oil filled next
             f"❤️ سلامت: {int(float(c['hp']))}/{int(float(c['max_hp']))}",
             f"😊 رضایت مردم: {sat:.0f}/100",
         ]
+        try:
+            from modules.ng.oil_resource import get_stock, daily_production_from_inventory
+            stock = await get_stock(self.db, code)
+            inv = await self.db.fetch(
+                "SELECT item_code, quantity FROM ng_inventory WHERE country_code=$1",
+                (code,),
+            )
+            daily_oil = daily_production_from_inventory(inv or [])
+            lines.insert(-3, f"🛢 نفت ذخیره‌شده: {int(stock):,} بشکه")
+            lines.insert(-3, f"🏭 تولید نفت روزانه: {int(daily_oil):,} بشکه (هر پالایشگاه ۱۲۰)")
+            lines.insert(-3, "")
+        except Exception:
+            log.exception("economy_card oil")
         return "\n".join(lines)
 
 
