@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from modules.ng.menu_session import MENU_SESSIONS, EXPIRED_MENU_TEXT, FORBIDDEN_MENU_TEXT
+from bot.ui import menus_v4 as v4ui
 
 from pathlib import Path
 
@@ -45,10 +46,10 @@ def parse_amount(text) -> float:
     return float(s)
 
 
-BTN_MY = "🏛 کشور من"
+BTN_MY = "🏛 کشور"
 BTN_ECO = "💰 اقتصاد"
 BTN_SHOP = "🛒 فروشگاه"
-BTN_INV = "📦 انبار من"
+BTN_INV = "📦 انبار"
 BTN_MKT = "🌐 بازار آزاد"
 BTN_TRADE = "🚢 تجارت جهانی"
 BTN_DIPLO = "🤝 روابط خارجی"
@@ -58,18 +59,18 @@ BTN_STMT = "📜 بیانیه رسمی"
 BTN_WORLD = "🌍 جهان"
 BTN_REPORT = "📊 گزارش‌ها"
 BTN_PICK = "🗺 انتخاب کشور"
-BTN_OWNER = "🛡 پنل مالک"
+BTN_OWNER = "🛡 پنل مدیریت"
 BTN_TICKET = "🎫 تیکت"
 BTN_WORKSHOP = "🏭 کارگاه"
 BTN_ABOUT = "ℹ️ درباره ما"
-BTN_GUIDE = "📖 راهنمای بازی"
+BTN_GUIDE = "📖 راهنما"
 BTN_REF = "🎁 دعوت کردن"
-BTN_ALLY = "🤝 اتحادها"
+BTN_ALLY = "🤝 اتحاد"
 BTN_CTRL = "🏛 کنترل کشور"
 BTN_TREATY = "⚖ پیمان‌ها"
 BTN_WALLET = "💰 کیف پول"
 BTN_DONATE = "💎 حمایت مالی"
-BTN_MORE = "📂 منوی بیشتر"
+BTN_MORE = "📂 بیشتر"
 BTN_NPT = "پیمان NPT"
 
 _pending: dict[int, dict] = {}
@@ -134,17 +135,9 @@ def nav_back(pid: int) -> str | None:
 
 
 def main_kb(is_owner: bool = False, has_country: bool = False) -> MenuKeyboardMarkup:
-    """Compact main menu — essentials first; secondary in «منوی بیشتر»."""
+    """Phase 4 main menu — category reply keyboard."""
     kb = MenuKeyboardMarkup()
-    rows = [
-        [BTN_MY, BTN_ECO],          # کشور / اقتصاد
-        ["⚔️ نظامی", BTN_SHOP],      # نظامی / فروشگاه
-        [BTN_INV, BTN_ALLY],         # انبار / اتحاد
-        [BTN_WORLD, BTN_MORE],       # جهان / بیشتر
-        [BTN_GUIDE, BTN_PICK],       # راهنما / انتخاب کشور
-    ]
-    if is_owner:
-        rows.append([BTN_OWNER])
+    rows = v4ui.main_rows(is_owner=is_owner)
     seen = set()
     clean = []
     for row in rows:
@@ -206,26 +199,12 @@ def ik(rows: list) -> InlineKeyboardMarkup:
 
 
 def more_menu_rows():
-    """Secondary features — categorized, kept off the main keyboard."""
-    return [
-        [("⚔️ حمله", "ng:more:attack"), ("🏛 کنترل کشور", "ng:more:ctrl")],
-        [("🤝 روابط خارجی", "ng:more:diplo"), ("⚖ پیمان‌ها", "ng:more:treaty")],
-        [("📜 بیانیه", "ng:more:stmt"), ("پیمان NPT", "ng:more:npt")],
-        [("🌐 بازار آزاد", "ng:more:mkt"), ("🚢 تجارت", "ng:more:trade")],
-        [("🏭 کارگاه", "ng:more:workshop"), ("🛢 نفت", "ng:more:oil")],
-        [("💰 کیف پول", "ng:more:wallet")],
-        [("📊 گزارش‌ها", "ng:more:report"), ("🎁 دعوت", "ng:more:ref")],
-        [("💎 حمایت مالی", "ng:more:donate"), ("ℹ️ درباره ما", "ng:more:about")],
-        back_row(),
-    ]
+    """Phase 4 more hub — nested categories."""
+    return v4ui.more_hub_rows()
 
 
 def more_menu_text() -> str:
-    return (
-        "📂 منوی بیشتر\n\n"
-        "اینجا امکانات جانبی قرار دارند تا صفحهٔ اصلی خلوت بماند.\n"
-        "یکی را انتخاب کنید:"
-    )
+    return v4ui.more_hub_text()
 
 def back_row():
     """Back goes to previous screen; Home goes to main menu."""
@@ -503,6 +482,9 @@ GAMEPLAY_TEXT_COMMANDS = {
     BTN_PEACE, BTN_ATTACK, BTN_STMT, BTN_WORLD, BTN_REPORT, BTN_PICK,
     BTN_WORKSHOP, BTN_REF, BTN_ALLY, BTN_CTRL, BTN_TREATY, BTN_WALLET,
     BTN_DONATE, BTN_MORE, BTN_NPT, "⚔️ نظامی",
+    v4ui.BTN_HOME, v4ui.BTN_COUNTRY, v4ui.BTN_ECO, v4ui.BTN_MIL, v4ui.BTN_SHOP,
+    v4ui.BTN_INV, v4ui.BTN_WORLD, v4ui.BTN_MORE, v4ui.BTN_GUIDE, v4ui.BTN_PICK,
+    v4ui.BTN_OWNER, v4ui.BTN_ALLY,
 }
 PRIVATE_ONLY_HINT = (
     "🔒 دستورات و منوهای بازی فقط در گفت‌وگوی خصوصی ربات در دسترس هستند.\n"
@@ -832,7 +814,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, "❌ خطا در برداشت")
                 return
 
-            if text in ("/admin", "/owner", "/panel", BTN_OWNER):
+            if text in ("/admin", "/owner", "/panel", BTN_OWNER, v4ui.BTN_OWNER):
                 if not owner:
                     await reply(message, "❌ دسترسی مجاز نیست.")
                     return
@@ -2057,40 +2039,22 @@ def register_handlers(bot, app_ctx: dict):
                     await game.ensure_shop_catalog()
                 except Exception:
                     log.exception("shop catalog seed")
-                rows = []
-                pair = []
-                for cat, name in CAT_FA.items():
-                    n = len(items_in_category(cat))
-                    pair.append((f"{name} ({n})", f"ng:shop:{cat}"))
-                    if len(pair) == 2:
-                        rows.append(pair)
-                        pair = []
-                if pair:
-                    rows.append(pair)
-                rows.append([("🎁 آیتم‌های لجندری", "ng:legshop")])
-                rows.append([("🛒 سبد خرید", "ng:cart"), ("✅ تسویه حساب", "ng:checkout")])
-                rows.append(back_row())
-                await reply(
-                    message,
-                    "🛒 فروشگاه\n\nدسته را انتخاب کنید.\nاولین ردیف: 💻 هک و امنیت — هکر پدافند و هکر دارایی\nسپس موشک‌ها، هوایی، دریایی، زمینی و پدافند.",
-                    ik(rows),
-                )
+                catmap = getattr(game, "_cat", None) or {}
+                if not catmap:
+                    try:
+                        from modules.ng.catalog import CATALOG as _CAT
+                        catmap = {x["item_code"]: x for x in _CAT}
+                    except Exception:
+                        catmap = {}
+                await reply(message, v4ui.shop_hub_text(), ik(v4ui.shop_hub_rows(catmap)))
                 return
 
             if text == BTN_INV:
                 if not code:
                     await reply(message, "هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.", main_kb(owner))
                     return
-                inv = await game.db.fetch(
-                    "SELECT * FROM ng_inventory WHERE country_code=$1 AND quantity>0 ORDER BY item_code",
-                    (code,),
-                )
-                rows = []
-                for r in inv[:20]:
-                    name = game._cat.get(r["item_code"], {}).get("name_fa", r["item_code"])
-                    rows.append([(f"فروش بازار: {name}", f"ng:sell:{r['item_code']}")])
-                rows.append(back_row())
-                await reply(message, await game.inventory_text(code), ik(rows) if inv else main_kb(owner))
+                nav_push(pid, "inv")
+                await reply(message, v4ui.inv_hub_text(), ik(v4ui.inv_hub_rows()))
                 return
 
             if text == BTN_MKT:
@@ -2144,7 +2108,7 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
 
-            if text in (BTN_ATTACK, "⚔️ نظامی"):
+            if text in (BTN_ATTACK, "⚔️ نظامی", v4ui.BTN_MIL):
                 nav_push(pid, "attack")
                 if not code:
                     await reply(message, "هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.", main_kb(owner))
@@ -3236,6 +3200,164 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             # shop
+
+            # ── Phase 4 UI routes ─────────────────────────────────
+            if data == "ng:v4:more:hub" or data == "ng:v4:more:home":
+                nav_push(pid, "more")
+                await out(v4ui.more_hub_text(), ik(v4ui.more_hub_rows()))
+                return
+            if data == "ng:v4:more:mil":
+                await out("⚔️ عملیات نظامی", ik(v4ui.mil_menu_rows()))
+                return
+            if data == "ng:v4:more:diplo":
+                await out("🕊 دیپلماسی", ik(v4ui.diplo_menu_rows()))
+                return
+            if data == "ng:v4:more:oil":
+                if not code:
+                    await out("هنوز کشوری نداری.")
+                    return
+                try:
+                    txt = await game.oil_panel_text(code)
+                except Exception:
+                    txt = "🛢 نفت"
+                await out(txt, ik([
+                    [("🛒 خرید نفت/منابع", "ng:v4:shop:mine")],
+                    [("🤝 فروش نفت", "ng:oil:sell")],
+                    [("🔙 بازگشت", "ng:v4:more:hub")],
+                ]))
+                return
+            if data == "ng:v4:more:industry":
+                await out("🏭 صنعت و تجارت", ik(v4ui.industry_menu_rows()))
+                return
+            if data == "ng:v4:more:docs":
+                await out("📜 قانون و بیانیه", ik(v4ui.docs_menu_rows()))
+                return
+            if data == "ng:v4:more:info":
+                await out("📊 گزارش و اطلاعات", ik(v4ui.info_menu_rows()))
+                return
+            if data == "ng:v4:more:support":
+                await out("💎 حمایت از بازی", ik([
+                    [("💎 حمایت مالی", "ng:more:donate")],
+                    [("🔙 بازگشت", "ng:v4:more:hub")],
+                ]))
+                return
+
+            if data.startswith("ng:v4:inv:"):
+                if not code:
+                    await out("کشور ندارید.")
+                    return
+                cat = data.split(":")[-1]
+                from modules.ng.inventory_service import format_qty_display
+                rows_db = await game.db.fetch(
+                    "SELECT * FROM ng_inventory WHERE country_code=$1 AND quantity>0 ORDER BY item_code",
+                    (code,),
+                )
+                lines = [f"📦 انبار — {cat}", ""]
+                shown = 0
+                for r in rows_db:
+                    meta = game._cat.get(r["item_code"]) or {}
+                    c = meta.get("category") or "other"
+                    if cat != "all" and c != cat:
+                        continue
+                    q = float(r["quantity"] or 0)
+                    if q <= 0:
+                        continue
+                    lines.append(f"• {meta.get('name_fa') or r['item_code']}: {format_qty_display(q)}")
+                    shown += 1
+                if shown == 0:
+                    lines.append("در این دسته چیزی نیست.")
+                await out("\n".join(lines), ik([
+                    [("⬅️ دسته‌های انبار", "ng:v4:invhub")],
+                    back_row(),
+                ]))
+                return
+            if data == "ng:v4:invhub" or data == "ng:go:inv":
+                if not code:
+                    await out("کشور ندارید.")
+                    return
+                nav_push(pid, "inv")
+                await out(v4ui.inv_hub_text(), ik(v4ui.inv_hub_rows()))
+                return
+
+            if data == "ng:v4:shophome" or data == "ng:shophome":
+                if not code:
+                    await out("کشور ندارید.")
+                    return
+                nav_push(pid, "shop")
+                catmap = getattr(game, "_cat", {}) or {}
+                await out(v4ui.shop_hub_text(), ik(v4ui.shop_hub_rows(catmap)))
+                return
+            if data.startswith("ng:v4:shop:"):
+                if not code:
+                    await out("کشور ندارید.")
+                    return
+                cat = data.split(":")[-1]
+                catmap = getattr(game, "_cat", {}) or {}
+                items = [m for m in catmap.values() if (m.get("category") or "other") == cat]
+                try:
+                    mult = await game.effective_shop_multiplier(pid, await game.db.fetchrow(
+                        "SELECT * FROM ng_countries WHERE country_code=$1", (code,)
+                    ) or {})
+                except Exception:
+                    mult = 1.0
+                title = dict(v4ui.INV_CATS).get(cat, cat)
+                await out(
+                    f"🛒 {title}\nقیمت‌ها ممکن است با ضریب کشور تغییر کند.\nکالا را انتخاب کنید:",
+                    ik(v4ui.shop_item_rows(items, cat, mult=mult)),
+                )
+                return
+            if data == "ng:v4:shopback":
+                await out(v4ui.shop_hub_text(), ik(v4ui.shop_hub_rows(getattr(game, "_cat", {}) or {})))
+                return
+            if data.startswith("ng:v4:item:"):
+                ic = data.split(":")[-1]
+                meta = (getattr(game, "_cat", {}) or {}).get(ic) or {}
+                name = meta.get("name_fa") or ic
+                price = int(float(meta.get("unit_price") or 0))
+                await out(
+                    f"🛍️ {name}\nقیمت واحد پایه: {price:,}\nتعداد را انتخاب کنید:",
+                    ik(v4ui.shop_qty_rows(ic)),
+                )
+                return
+            if data.startswith("ng:v4:qtyask:"):
+                ic = data.split(":")[-1]
+                await _set_pending(game, pid, "shop_add_qty", item=ic)
+                await out("تعداد موردنظر را به‌صورت عدد بفرستید (۱ تا ۲۵۰):", ik([cancel_row()]))
+                return
+            if data.startswith("ng:v4:qty:"):
+                parts = data.split(":")
+                ic, qty_s = parts[3], parts[4]
+                qty = int(qty_s)
+                meta = (getattr(game, "_cat", {}) or {}).get(ic) or {}
+                name = meta.get("name_fa") or ic
+                unit = float(meta.get("unit_price") or 0)
+                try:
+                    mult = await game.effective_shop_multiplier(pid, await game.db.fetchrow(
+                        "SELECT * FROM ng_countries WHERE country_code=$1", (code,)
+                    ) or {})
+                except Exception:
+                    mult = 1.0
+                total = int(unit * mult * qty)
+                await out(
+                    f"تأیید خرید\n\n• کالا: {name}\n• تعداد: {qty}\n• مبلغ تقریبی: {total:,}\n\nبا تأیید، به سبد اضافه می‌شود.",
+                    ik(v4ui.shop_confirm_rows(ic, qty)),
+                )
+                return
+            if data.startswith("ng:v4:buy:"):
+                parts = data.split(":")
+                ic, qty_s = parts[3], parts[4]
+                qty = int(qty_s)
+                try:
+                    msg_add = await game.cart_add(pid, ic, qty)
+                    await out(msg_add + "\n\nبرای پرداخت نهایی «تسویه» را بزنید.", ik([
+                        [("✅ تسویه حساب", "ng:checkout"), ("🛒 سبد", "ng:cart")],
+                        [("⬅️ فروشگاه", "ng:v4:shophome")],
+                    ]))
+                except GameError as e:
+                    await out(f"❌ {e}")
+                return
+
+
             if data.startswith("ng:shop:"):
                 cat = data.split(":")[-1]
                 try:
