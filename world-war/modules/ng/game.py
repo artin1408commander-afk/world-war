@@ -3646,7 +3646,29 @@ class Game:
                 log.exception("auto expire ban")
         return dict(p)
 
+    async def resolve_player_id(self, raw: str) -> int | None:
+        """Resolve @username or numeric id to player_id."""
+        s = (raw or "").strip()
+        if not s:
+            return None
+        if s.startswith("@"):
+            un = s[1:].lower()
+            row = await self.db.fetchrow(
+                "SELECT player_id FROM ng_players WHERE lower(COALESCE(username,''))=$1",
+                (un,),
+            )
+            return int(row["player_id"]) if row else None
+        try:
+            return int(s.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")))
+        except Exception:
+            row = await self.db.fetchrow(
+                "SELECT player_id FROM ng_players WHERE lower(COALESCE(username,''))=$1",
+                (s.lower().lstrip("@"),),
+            )
+            return int(row["player_id"]) if row else None
+
     async def ban(
+
         self,
         actor: int,
         target: int,
@@ -3686,7 +3708,7 @@ class Game:
         else:
             ban_permanent = 0
             if days is None:
-                days = 1
+                raise GameError("مدت بن مشخص نشده است. تعداد روز یا دائم را وارد کنید.")
             ban_days = int(days)
             if ban_days <= 0:
                 raise GameError("مدت بن نامعتبر است")

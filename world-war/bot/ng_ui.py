@@ -826,50 +826,19 @@ def register_handlers(bot, app_ctx: dict):
                     summary = "🛡 پنل مالک / سازمان ملل"
                 rows = []
                 if game.is_primary_owner(pid):
-                    rows.append([("➕ افزودن مالک جدید", "ng:owners"), ("🛡 لیست مالکان", "ng:owners")])
+                    rows.append([("➕ افزودن مالک", "ng:owners"), ("🛡 لیست مالکان", "ng:owners")])
                 rows += [
                     [("👤 بازیکنان", "ng:o:hub:players"), ("🗺 کشورها", "ng:o:hub:countries")],
                     [("💰 اقتصاد", "ng:o:hub:economy"), ("📦 تجهیزات", "ng:o:hub:inventory")],
-                    [("🕊 دیپلماسی", "ng:o:hub:diplo"), ("⚔️ جنگ‌ها", "ng:o:hub:wars")],
+                    [("🕊 دیپلماسی", "ng:o:hub:diplo"), ("⚔️ جنگ", "ng:o:hub:wars")],
                     [("⚙️ تنظیمات", "ng:o:hub:settings"), ("📋 گزارش‌ها", "ng:o:hub:logs")],
-                    [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
-                    [("🌐 مدیریت اتحادها", "ng:oally"), ("📊 آمار دعوت", "ng:orefstats")],
-                    [("🏷 گروه‌های رزرو اتحاد", "ng:oapool")],
-                    [("💵 پول همگانی", "ng:ogiveall"), ("❤️ جون همگانی", "ng:ohpall")],
-                    [("💰 پرداخت درآمد روزانه", "ng:odaily")],
-                    [("جنگ باز", "ng:owar:1"), ("جنگ بسته", "ng:owar:0")],
-                    [("🔒 قطع خرید", "ng:oshop:1"), ("🔓 آزاد خرید", "ng:oshop:0")],
-                    [("هسته‌ای فعال", "ng:onuke:1"), ("هسته‌ای خاموش", "ng:onuke:0")],
-                    [("⏱ کول‌داون ۳۰ث + اتم ۶۰ث", "ng:ocdstd")],
-                    [("⚡ فقط حمله ۳۰ث", "ng:ocd:30")],
-                    [("⏱ کول‌داون ۲د", "ng:ocd:120"), ("⏱ کول‌داون ۵د", "ng:ocd:300")],
-                    [("بیانیه‌ها", "ng:ostmt"), ("درخواست‌های NPT", "ng:onpt")],
-                    [("📜 قوانین در انتظار", "ng:olaws")],
-                    [("🔕 در دسترس نیستم", "ng:oaway")],
-                    [("تنظیم لاگ‌ها", "ng:ologs")],
-                    [("📝 پیام /start", "ng:ostart"), ("ℹ️ درباره ما", "ng:oabout")],
-                    [("🧪 حساب تستی", "ng:otest"), ("⚙️ عضویت اجباری", "ng:oforce")],
-                    [("بن کاربر", "ng:oban"), ("آنبن کاربر", "ng:ounban")],
                     [("🎫 تیکت‌ها", "ng:otix"), ("🔍 جستجوی بن", "ng:obansearch")],
-                    [("تغییر پول کشور", "ng:omoney")],
-                    [("💰 گرفتن مالیات", "ng:otax"), ("⚖️ محکوم کردن کشور", "ng:ocondemn")],
-                    [("❤️ دیدن HP ها", "ng:ohp"), ("🏅 رنکینگ", "ng:orank")],
-                    [("🧬 جان ۲ برابر کشورها", "ng:odblhp")],
-                    [("🎁 مدیریت لجندری", "ng:oleg"), ("💰 شارژ کیف پول", "ng:owallet")],
-                    [("🎭 گروه هکری آنانیموس", "ng:ohack")],
-                    [("💎 حمایت مالی", "ng:odonate")],
-                    [("⚙️ قیمت و استفاده لجندری", "ng:olegprices")],
-                    [("🔒 محدودیت لجندری روشن", "ng:llock:1")],
-                    [("🔓 محدودیت لجندری خاموش", "ng:llock:0")],
-                    [("🔒 وضعیت محدودیت لجندری", "ng:llock")],
-                    [("🏷 قیمت فروشگاه", "ng:oprices"), ("🏷 تخفیف فروشگاه", "ng:odiscount")],
-                    [("☠️ هاردکور روشن", "ng:ohardcore:1")],
-                    [("🕊 هاردکور خاموش", "ng:ohardcore:0")],
-                    [("☠️ وضعیت هاردکور", "ng:ohardcore:status")],
-                    [("⏱ کول‌داون ۳۰ث/اتم۶۰ث", "ng:ocdstd")],
-                    [("🔴 ریست کامل جهان", "ng:oreset1")],
                 ]
-                await reply(message, str(summary) + chr(10) + chr(10) + "دستورات: /admin /owner /panel", ik(rows))
+                await reply(
+                    message,
+                    str(summary) + chr(10) + chr(10) + "بخش را انتخاب کنید. با ورود به هر دسته، همین پیام به‌روز می‌شود.",
+                    ik(rows),
+                )
                 return
             owner = game.is_owner(pid)
             code = await game.player_country(pid)
@@ -1334,21 +1303,11 @@ def register_handlers(bot, app_ctx: dict):
                             return
                     st["permanent"] = permanent
                     st["days"] = days
-                    st["kind"] = "ban_wizard_reason"
-                    _pending[pid] = st
-                    await reply(message, "دلیل را بنویس:", ik([cancel_row()]))
-                    return
-                if kind == "ban_wizard_reason":
-                    reason = text.strip()
-                    if len(reason) < 2:
-                        await reply(message, "❌ دلیل خیلی کوتاه است. دوباره بنویس:", ik([cancel_row()]))
-                        return
-                    st["reason"] = reason
                     st["kind"] = "ban_wizard_package"
                     _pending[pid] = st
                     await reply(
                         message,
-                        "قابلیت استفاده پکیج آن‌بن؟\nبله / خیر",
+                        "پکیج آن‌بن فعال باشد؟\nبنویس: بله یا خیر",
                         ik([cancel_row()]),
                     )
                     return
@@ -1360,10 +1319,21 @@ def register_handlers(bot, app_ctx: dict):
                         await reply(message, "❌ فقط بله یا خیر بنویس:", ik([cancel_row()]))
                         return
                     st["unban_package"] = yes
+                    st["kind"] = "ban_wizard_reason"
+                    _pending[pid] = st
+                    await reply(message, "دلیل بن را بنویس:", ik([cancel_row()]))
+                    return
+                if kind == "ban_wizard_reason":
+                    reason = text.strip()
+                    if len(reason) < 2:
+                        await reply(message, "❌ دلیل خیلی کوتاه است. دوباره بنویس:", ik([cancel_row()]))
+                        return
+                    st["reason"] = reason
                     st["kind"] = "ban_wizard_confirm"
                     _pending[pid] = st
                     duration = "دائم" if st.get("permanent") else f"{st.get('days')} روز"
-                    pkg = "بله" if yes else "خیر"
+                    pkg = "بله" if st.get("unban_package") else "خیر"
+                    yes = bool(st.get("unban_package"))
                     summary = (
                         f"تأیید نهایی بن:\n"
                         f"کاربر: {st.get('target')}\n"
@@ -1450,14 +1420,38 @@ def register_handlers(bot, app_ctx: dict):
                         await reply(message, f"❌ {e}")
                     return
 
-                if kind == "ban_user":
-
-                    _pending.pop(pid, None)
+                if kind == "ban_user" or kind == "ban_wizard_target":
+                    # resolve target then start full wizard (no instant 1-day ban)
+                    raw = (text or "").strip()
                     try:
-                        msg = await game.ban_user(pid, text, "پنل مالک")
-                    except GameError as e:
-                        msg = f"❌ {e}"
-                    await reply(message, msg, main_kb(owner))
+                        tid = await game.resolve_player_id(raw)
+                    except Exception:
+                        tid = None
+                    if not tid:
+                        # try numeric
+                        try:
+                            tid = int(raw.replace("@", "").strip())
+                        except Exception:
+                            tid = None
+                    if not tid:
+                        await reply(message, "❌ کاربر یافت نشد. آیدی یا @username معتبر بفرستید:", ik([cancel_row()]))
+                        return
+                    import time as _time
+                    auto_code = str(int(_time.time()) % 1000000)
+                    try:
+                        while await game.is_ban_code_taken(auto_code):
+                            auto_code = str((int(auto_code) + 7) % 1000000)
+                    except Exception:
+                        pass
+                    await _set_pending(
+                        game, pid, "ban_wizard_duration",
+                        target=int(tid), ban_code=auto_code,
+                    )
+                    await reply(
+                        message,
+                        f"هدف: {tid}\nکد بن: #{auto_code}\n\nچند روز بن باشد؟\nعدد روز یا «دائم» را بفرستید:",
+                        ik([cancel_row()]),
+                    )
                     return
                 if kind == "unban_user":
                     _pending.pop(pid, None)
@@ -4561,12 +4555,16 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 hubk = data.split(":")[-1]
                 if hubk == "players":
-                    await out("👤 مدیریت بازیکنان", ik([
-                        [("بازیکنان", "ng:o:players"), ("بن کاربر", "ng:oban")],
-                        [("آنبن کاربر", "ng:ounban"), ("🔍 جستجوی بن", "ng:obansearch")],
-                        [("🧪 حساب تستی", "ng:otest")],
-                        back_row(),
-                    ]))
+                    await out(
+                        "👤 مدیریت بازیکنان\nیک گزینه را انتخاب کنید:",
+                        ik([
+                            [("📋 لیست/جستجو", "ng:o:players")],
+                            [("🚫 بن کاربر", "ng:oban"), ("✅ آن‌بن", "ng:ounban")],
+                            [("🔍 جستجوی کد بن", "ng:obansearch")],
+                            [("🧪 حساب تستی", "ng:otest")],
+                            back_row(),
+                        ]),
+                    )
                 elif hubk == "countries":
                     await out("🗺 کشورها", ik([
                         [("وضعیت جهان", "ng:o:world"), ("❤️ دیدن HP", "ng:ohp")],
@@ -5304,8 +5302,11 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ {e}")
                 return
             if data == "ng:oban":
-                _pending[pid] = {"kind": "ban_user"}
-                await out("آیدی عددی یا @username بازیکن را بفرستید:")
+                await _set_pending(game, pid, "ban_wizard_target")
+                await out(
+                    "🚫 بن کاربر\n\nآیدی عددی یا @username بازیکن را بفرستید:",
+                    ik([cancel_row()]),
+                )
                 return
             if data == "ng:obansearch":
                 if not owner:
@@ -6121,16 +6122,27 @@ def register_handlers(bot, app_ctx: dict):
 
             if data.startswith("ng:ouban:"):
                 if not owner:
-                    await out("❌ فقط مالک", force_new=True)
+                    await out("❌ فقط مالک")
                     return
-                tid = int(data.split(":")[-1])
-                _pending[pid] = {"kind": "ban_wizard_code", "target": tid}
+                try:
+                    tid = int(data.split(":")[-1])
+                except Exception:
+                    await out("❌ شناسه نامعتبر")
+                    return
+                # auto ban code; ask duration first
+                import time as _time
+                auto_code = str(int(_time.time()) % 1000000)
+                while await game.is_ban_code_taken(auto_code):
+                    auto_code = str((int(auto_code) + 1) % 1000000)
+                await _set_pending(
+                    game, pid, "ban_wizard_duration",
+                    target=tid, ban_code=auto_code,
+                )
                 await out(
-                    f"کد بن را وارد کنید برای کاربر `{tid}`:\n"
-                    "مثال: 1024\n"
-                    "(اگر تکراری باشد اعلام می‌شود)",
+                    f"🚫 بن کاربر {tid}\n\n"
+                    f"کد بن خودکار: #{auto_code}\n\n"
+                    "چند روز بن باشد؟\nعدد روز را بفرست یا بنویس: دائم",
                     ik([cancel_row()]),
-                    force_new=True,
                 )
                 return
             if data.startswith("ng:ouunban:"):
