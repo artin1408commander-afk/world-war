@@ -67,7 +67,7 @@ class ControlService:
                 maritime_open INTEGER NOT NULL DEFAULT 1,
                 internet_on INTEGER NOT NULL DEFAULT 1,
                 satisfaction REAL NOT NULL DEFAULT 70,
-                base_daily_income REAL NOT NULL DEFAULT 100000000,
+                base_daily_income REAL NOT NULL DEFAULT 300000000,
                 leader_crisis_until TEXT,
                 updated_at TEXT
             )""",
@@ -309,14 +309,16 @@ class ControlService:
         return max(0.35, m)
 
     async def global_oil_price_mult(self) -> float:
+        """+15% oil price per closed strategic strait (max +45%)."""
         straits = await self.db.fetch("SELECT * FROM ng_straits WHERE closed=1")
-        mult = 1.0
+        n = 0
         for s in straits:
-            if s["strait_code"] in ("hormuz", "bab_mandeb", "suez"):
-                mult += 0.25
+            if s["strait_code"] in ("hormuz", "bab_mandeb", "suez", "malacca"):
+                n += 1
             else:
-                mult += 0.12
-        return min(2.0, mult)
+                n += 1  # other closed straits still pressure market mildly
+        # user rule: 15% per relevant closure; cap stacking
+        return min(1.45, 1.0 + 0.15 * max(0, n))
 
     async def list_controllable_straits(self, code: str) -> list[dict]:
         rows = await self.db.fetch("SELECT * FROM ng_straits")
@@ -357,11 +359,20 @@ class ControlService:
                 "UPDATE ng_country_control SET satisfaction=$1, updated_at=$2 WHERE country_code=$3",
                 (sat, datetime.now(timezone.utc).isoformat(), code),
             )
+            mult = await self.global_oil_price_mult()
+            from modules.ng.oil_resource import BASE_OIL_UNIT_PRICE
+            price = int(BASE_OIL_UNIT_PRICE * mult)
             await self.g.broadcast_log(
                 "strait",
-                f"🌊 تنگه «{s['name_fa']}» توسط {await self.g.country_label(code)} بسته شد.\nقیمت نفت و تجارت جهانی تحت فشار قرار گرفت.",
+                "📢 تغییر بازار جهانی نفت\n\n"
+                f"به دلیل بسته شدن تنگه «{s['name_fa']}»، قیمت نفت تحت فشار قرار گرفت.\n"
+                f"ضریب فعلی قیمت نفت: ×{mult:.2f}\n"
+                f"قیمت مرجع نفت: {price:,}",
             )
-            return f"⛔ تنگه «{s['name_fa']}» بسته شد.\nقیمت جهانی نفت افزایش می‌یابد."
+            return (
+                f"⛔ تنگه «{s['name_fa']}» بسته شد.\n"
+                f"قیمت نفت اکنون ×{mult:.2f} است (مرجع: {price:,})."
+            )
         await self.db.execute(
             "UPDATE ng_straits SET closed=0, closed_by=NULL, closed_at=NULL WHERE strait_code=$1",
             (strait_code,),
@@ -377,7 +388,12 @@ class ControlService:
         target_country: str | None = None, banned_item: str | None = None,
     ) -> str:
         await self._assert_owner(code, pid)
-        title = (title or "").strip()[:80]
+        try:
+            from modules.ng.text_validate import validate_law_title, validate_law_body
+            title = validate_law_title(title)
+            body = validate_law_body(body)
+        except ValueError as e:
+            raise ControlError(str(e)) from e
         body = (body or "").strip()[:1500]
         if len(title) < 3 or len(body) < 20:
             raise ControlError("عنوان یا متن قانون کافی نیست.")

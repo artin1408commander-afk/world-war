@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from modules.ng.menu_session import MENU_SESSIONS, EXPIRED_MENU_TEXT
 
 from pathlib import Path
 
@@ -136,12 +137,11 @@ def main_kb(is_owner: bool = False, has_country: bool = False) -> MenuKeyboardMa
     """Compact main menu — essentials first; secondary in «منوی بیشتر»."""
     kb = MenuKeyboardMarkup()
     rows = [
-        [BTN_GUIDE, BTN_MY],
-        [BTN_NPT, BTN_SHOP],
-        [BTN_ATTACK, BTN_ECO],
-        [BTN_INV, BTN_ALLY],
-        [BTN_WORLD, BTN_MORE],
-        [BTN_PICK],
+        [BTN_MY, BTN_ECO],          # کشور / اقتصاد
+        ["⚔️ نظامی", BTN_SHOP],      # نظامی / فروشگاه
+        [BTN_INV, BTN_ALLY],         # انبار / اتحاد
+        [BTN_WORLD, BTN_MORE],       # جهان / بیشتر
+        [BTN_GUIDE, BTN_PICK],       # راهنما / انتخاب کشور
     ]
     if is_owner:
         rows.append([BTN_OWNER])
@@ -206,15 +206,15 @@ def ik(rows: list) -> InlineKeyboardMarkup:
 
 
 def more_menu_rows():
-    """Secondary features — kept off the main keyboard."""
+    """Secondary features — categorized, kept off the main keyboard."""
     return [
-        [("🏭 کارگاه", "ng:more:workshop"), ("🤝 روابط خارجی", "ng:more:diplo")],
+        [("⚔️ حمله", "ng:more:attack"), ("🏛 کنترل کشور", "ng:more:ctrl")],
+        [("🤝 روابط خارجی", "ng:more:diplo"), ("⚖ پیمان‌ها", "ng:more:treaty")],
+        [("📜 بیانیه", "ng:more:stmt"), ("پیمان NPT", "ng:more:npt")],
         [("🌐 بازار آزاد", "ng:more:mkt"), ("🚢 تجارت", "ng:more:trade")],
-        [("⚖ پیمان‌ها", "ng:more:treaty"), ("💰 کیف پول", "ng:more:wallet")],
-        [("📜 بیانیه", "ng:more:stmt"), ("📊 گزارش‌ها", "ng:more:report")],
-        [("🎁 دعوت", "ng:more:ref"), ("💎 حمایت مالی", "ng:more:donate")],
-        [("پیمان NPT", "ng:more:npt")],
-        [("ℹ️ درباره ما", "ng:more:about")],
+        [("🏭 کارگاه", "ng:more:workshop"), ("💰 کیف پول", "ng:more:wallet")],
+        [("📊 گزارش‌ها", "ng:more:report"), ("🎁 دعوت", "ng:more:ref")],
+        [("💎 حمایت مالی", "ng:more:donate"), ("ℹ️ درباره ما", "ng:more:about")],
         back_row(),
     ]
 
@@ -496,7 +496,21 @@ def _is_group_chat(message) -> bool:
         return False
 
 
+# Gameplay interactions are private-chat only
+GAMEPLAY_TEXT_COMMANDS = {
+    BTN_MY, BTN_ECO, BTN_SHOP, BTN_INV, BTN_MKT, BTN_TRADE, BTN_DIPLO,
+    BTN_PEACE, BTN_ATTACK, BTN_STMT, BTN_WORLD, BTN_REPORT, BTN_PICK,
+    BTN_WORKSHOP, BTN_REF, BTN_ALLY, BTN_CTRL, BTN_TREATY, BTN_WALLET,
+    BTN_DONATE, BTN_MORE, BTN_NPT, "⚔️ نظامی",
+}
+PRIVATE_ONLY_HINT = (
+    "🔒 دستورات و منوهای بازی فقط در گفت‌وگوی خصوصی ربات در دسترس هستند.\n"
+    "همین‌جا به پیوی ربات پیام بدهید."
+)
+
+
 def register_handlers(bot, app_ctx: dict):
+
     game = app_ctx["game"]
     settings = app_ctx["settings"]
     # optional: store last group send helper
@@ -664,6 +678,22 @@ def register_handlers(bot, app_ctx: dict):
             if not pid:
                 return
             username, display = _names(message)
+            # Private-chat-only gameplay (groups: short hint, no execution)
+            try:
+                if _is_group_chat(message):
+                    tstrip = (text or "").strip()
+                    if (
+                        tstrip in GAMEPLAY_TEXT_COMMANDS
+                        or tstrip.startswith(("/country", "/shop", "/attack"))
+                        or tstrip in ("خرید", "حمله", "کشور من", "انبار", "فروشگاه")
+                    ):
+                        try:
+                            await reply(message, PRIVATE_ONLY_HINT)
+                        except Exception:
+                            pass
+                        return
+            except Exception:
+                log.exception("private-only gate")
             try:
                 await ensure(pid, username, display)
             except GameError as e:
@@ -2109,7 +2139,7 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
 
-            if text == BTN_ATTACK:
+            if text in (BTN_ATTACK, "⚔️ نظامی"):
                 nav_push(pid, "attack")
                 if not code:
                     await reply(message, "هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.", main_kb(owner))
@@ -2314,7 +2344,37 @@ def register_handlers(bot, app_ctx: dict):
                     await cq.answer(text="⏳", show_alert=False)
             except Exception:
                 pass
+            # 30s menu timeout for interactive ng: menus
+            try:
+                msg_to = getattr(cq, "message", None)
+                mid_to = None
+                if msg_to is not None:
+                    mid_to = getattr(msg_to, "message_id", None) or getattr(msg_to, "id", None)
+                if data.startswith("ng:") and mid_to is not None:
+                    key = (int(pid), int(mid_to))
+                    if key in MENU_SESSIONS._sessions and not MENU_SESSIONS.is_alive(pid, mid_to):
+                        try:
+                            await cq.answer(EXPIRED_MENU_TEXT, show_alert=True)
+                        except Exception:
+                            pass
+                        try:
+                            if msg_to is not None:
+                                for attr in ("edit_text", "edit"):
+                                    fn = getattr(msg_to, attr, None)
+                                    if callable(fn):
+                                        await fn(EXPIRED_MENU_TEXT)
+                                        break
+                        except Exception:
+                            pass
+                        MENU_SESSIONS.expire(pid, mid_to)
+                        return
+                    MENU_SESSIONS.touch(pid, mid_to)
+            except Exception:
+                log.exception("menu timeout check")
             log.info("callback data=%s pid=%s", data[:64], pid)
+            if data.startswith("ng:leg") or data.startswith("ng:legendary"):
+                await out("⛔ سیستم آیتم‌های افسانه‌ای در این نسخه حذف شده است.")
+                return
             data0 = str(getattr(cq, "data", None) or getattr(cq, "callback_data", None) or "")
             banned_user = False
             try:
@@ -2345,6 +2405,14 @@ def register_handlers(bot, app_ctx: dict):
             async def out(text, kb=None, *, force_new: bool = False):
                 body = str(text)[:3500]
                 comp = kb if kb is not None else main_kb(owner)
+                try:
+                    mid_out = None
+                    if msg is not None:
+                        mid_out = getattr(msg, "message_id", None) or getattr(msg, "id", None)
+                    if mid_out is not None:
+                        MENU_SESSIONS.touch(pid, mid_out)
+                except Exception:
+                    pass
                 if not force_new and msg is not None:
                     for attr in ("edit_text", "edit", "edit_message_text"):
                         fn = getattr(msg, attr, None)
@@ -2544,6 +2612,34 @@ def register_handlers(bot, app_ctx: dict):
                 if key in ("", "home", "more"):
                     await out(more_menu_text(), ik(more_menu_rows()))
                     return
+                if key == "attack":
+                    if not code:
+                        await out("هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.")
+                        return
+                    nav_push(pid, "attack")
+                    await out(
+                        "⚔️ حمله نظامی\n\nنوع درگیری را انتخاب کنید:",
+                        ik([
+                            [("🏞 زمینی", "ng:atk:ground"), ("✈️ هوایی", "ng:atk:air")],
+                            [("🚢 دریایی", "ng:atk:sea")],
+                            back_row(),
+                        ]),
+                    )
+                    return
+                if key == "ctrl":
+                    if not code:
+                        await out("هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.")
+                        return
+                    nav_push(pid, "ctrl")
+                    await out(
+                        "🏛 کنترل کشور\n\nمدیریت داخلی، تنگه‌ها و قوانین:",
+                        ik([
+                            [("🌊 تنگه‌ها", "ng:ctrl:straits"), ("📜 قوانین", "ng:ctrl:laws")],
+                            [("📊 وضعیت کنترل", "ng:ctrl:status")],
+                            back_row(),
+                        ]),
+                    )
+                    return
                 if key == "workshop":
                     if not code:
                         await out("هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.")
@@ -2614,22 +2710,17 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 if key == "wallet":
                     nav_push(pid, "wallet")
-                    try:
-                        txt = await game.legendary.wallet_text(pid)
-                    except Exception:
-                        txt = "💰 کیف پول لجندری"
-                    rows = [
-                        [("💳 واریز به کیف پول", "ng:wallet_deposit")],
-                        [("🎁 فروشگاه لجندری", "ng:legshop")],
-                        [("🎁 استفاده از آیتم", "ng:leguse")],
-                        back_row(),
-                    ]
-                    await out(txt, ik(rows))
+                    txt = (
+                        "💰 کیف پول\n\n"
+                        "سیستم آیتم‌های افسانه‌ای حذف شده است.\n"
+                        "موجودی و اقتصاد اصلی کشور از بخش «کشور من» و «اقتصاد» مدیریت می‌شود."
+                    )
+                    await out(txt, ik([back_row()]))
                     return
                 if key == "stmt":
                     nav_push(pid, "stmt")
                     _pending[pid] = {"kind": "statement"}
-                    await out("📜 متن بیانیه را بنویسید (حداقل ۵۰ کاراکتر). برای لغو: لغو", ik([cancel_row()]))
+                    await out("📜 متن بیانیه را بنویسید (لینک مجاز نیست). برای لغو: لغو", ik([cancel_row()]))
                     return
                 if key == "report":
                     nav_push(pid, "report")

@@ -145,10 +145,10 @@ class Game:
             await self.legendary.ensure_tables()
             try:
                 await self.db.execute(
-                    "UPDATE ng_country_control SET base_daily_income=100000000 WHERE COALESCE(base_daily_income,0)<>100000000"
+                    "UPDATE ng_country_control SET base_daily_income=300000000 WHERE COALESCE(base_daily_income,0)<300000000"
                 )
             except Exception:
-                log.exception("force_base_daily_100m")
+                log.exception("force_base_daily_300m")
 
             try:
                 n = await self.legendary.expire_all_active_effects("bootstrap")
@@ -1102,6 +1102,10 @@ class Game:
         return out
 
     async def daily_payout_all(self, *, force: bool = False) -> int:
+        try:
+            await self.produce_oil_daily_all()
+        except Exception:
+            log.exception("oil daily production")
         """Pay daily income to eligible owned countries.
 
         force=False (scheduler): once per Tehran calendar day per country.
@@ -1148,11 +1152,8 @@ class Game:
                 continue
             net_buildings = float(c2.get("daily_income") or 0) - float(c2.get("daily_expense") or 0)
             total = (base * mod) + max(0.0, law_bonus) + max(0.0, net_buildings)
-            try:
-                leg_m = await self.legendary.income_multiplier(code)
-                total *= float(leg_m)
-            except Exception:
-                log.exception("legendary income mult %s", code)
+            # Legendary removed from gameplay — no income multiplier
+
             total = max(0.0, total)
             try:
                 async with self.db.transaction() as tx:
@@ -1329,6 +1330,11 @@ class Game:
             raise GameError("مبلغ نامعتبر")
         if src == dst:
             raise GameError("مقصد نامعتبر")
+        try:
+            from modules.ng import transfer_limits as tl
+            await tl.assert_can_receive_money(self.db, dst, amount)
+        except ValueError as e:
+            raise GameError(str(e)) from e
         async with self.db.transaction() as tx:
             a = await tx.fetchrow("SELECT treasury FROM ng_countries WHERE country_code=$1", (src,))
             b = await tx.fetchrow("SELECT treasury FROM ng_countries WHERE country_code=$1", (dst,))
@@ -1344,6 +1350,11 @@ class Game:
                 "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
                 (float(b["treasury"]) + amount, dst),
             )
+        try:
+            from modules.ng import transfer_limits as tl
+            await tl.add_received_money(self.db, dst, amount)
+        except Exception:
+            log.exception("aid receive counter")
         await self.log_activity("aid_money", f"کمک مالی {int(amount):,} به {dst}", src, pid)
         await self.broadcast_log("aid_money", f"💰 {src} به {dst} کمک مالی کرد: {int(amount):,}")
         return "✅ کمک مالی انجام شد."
@@ -1352,6 +1363,15 @@ class Game:
         qty = float(qty)
         if qty <= 0:
             raise GameError("تعداد نامعتبر")
+        # whole units only for transfers
+        qty = float(int(qty))
+        if qty <= 0:
+            raise GameError("تعداد نامعتبر")
+        try:
+            from modules.ng import transfer_limits as tl
+            await tl.assert_can_receive_equip(self.db, dst, qty)
+        except ValueError as e:
+            raise GameError(str(e)) from e
         async with self.db.transaction() as tx:
             inv = await tx.fetchrow(
                 "SELECT quantity FROM ng_inventory WHERE country_code=$1 AND item_code=$2",
@@ -1378,6 +1398,11 @@ class Game:
                     "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
                     (dst, item, qty),
                 )
+        try:
+            from modules.ng import transfer_limits as tl
+            await tl.add_received_equip(self.db, dst, qty)
+        except Exception:
+            log.exception("aid equip counter")
         await self.log_activity("aid_army", f"کمک نظامی {item}×{int(qty)} به {dst}", src, pid)
         await self.broadcast_log("aid_army", f"📦 {src} به {dst} کمک نظامی ارسال کرد.")
         return "✅ کمک نظامی ارسال شد."
@@ -2090,7 +2115,7 @@ class Game:
                 log.exception("effective_attack_cooldown_sec")
         return int(base)
 
-    BASE_DAILY_GRANT = 100_000_000  # fixed daily grant per owned country (Tehran day)
+    BASE_DAILY_GRANT = 300_000_000  # fixed daily grant per owned country (Tehran day)
     REF_INVITEE_REWARD = 30_000_000
     REF_REFERRER_REWARD = 30_000_000
     MAX_LOOT_RATIO = 0.08  # max 8% of defender treasury
@@ -2556,11 +2581,17 @@ class Game:
             raise GameError("پیمان صلح فعال است؛ حمله ممکن نیست.")
         if not free_atk:
             try:
-                await self.legendary.assert_can_attack(attacker)
-            except LegendaryError as e:
-                raise GameError(str(e)) from e
-        if not free_atk and await self.legendary.is_immune(defender):
-            raise GameError("کشور هدف مصونیت دارد؛ حمله بی‌اثر است.")
+                ma = await self.alliances.member_of(attacker)
+                md = await self.alliances.member_of(defender)
+                if ma and md and int(ma.get("alliance_id") or 0) == int(md.get("alliance_id") or 0):
+                    raise GameError("⚠️ شما با این کشور هم‌پیمان هستید و نمی‌توانید به آن حمله کنید.")
+            except GameError:
+                raise
+            except Exception:
+                log.exception("alliance attack check")
+        # Legendary system disabled (Phase 1): effects no longer applied
+        # Data tables retained for safety; gameplay ignores legendary locks/immunity.
+
         if attacker == defender:
             raise GameError("نامعتبر")
         if kind not in ("ground", "air", "sea"):
@@ -3042,6 +3073,11 @@ class Game:
 
     # ---------- statements ----------
     async def submit_statement(self, code: str, pid: int, body: str) -> str:
+        try:
+            from modules.ng.text_validate import validate_statement
+            body = validate_statement(body)
+        except ValueError as e:
+            raise GameError(str(e)) from e
         body = body.strip()
         if len(body) < 50:
             raise GameError("متن بیانیه باید حداقل ۵۰ کاراکتر باشد.")
@@ -4538,14 +4574,54 @@ class Game:
                 (country_code, item_code, add),
             )
 
+
+    async def produce_oil_daily_all(self) -> int:
+        """Idempotent daily oil production for all owned countries."""
+        from modules.ng.oil_resource import produce_daily_for_country, ensure_tables
+        await ensure_tables(self.db)
+        countries = await self.db.fetch(
+            "SELECT country_code FROM ng_countries WHERE owner_player_id IS NOT NULL AND COALESCE(is_destroyed,0)=0"
+        )
+        n = 0
+        for c in countries:
+            code = c["country_code"]
+            inv = await self.db.fetch(
+                "SELECT item_code, quantity FROM ng_inventory WHERE country_code=$1 AND quantity>0",
+                (code,),
+            )
+            produced = await produce_daily_for_country(self.db, code, inv)
+            if produced > 0:
+                n += 1
+        return n
+
     async def inventory_text(self, code: str) -> str:
         rows = await self.db.fetch(
             "SELECT * FROM ng_inventory WHERE country_code=$1 AND quantity>0 ORDER BY item_code",
             (code,),
         )
-        lines = ["📦 انبار نظامی و تجهیزات", ""]
+        cat_title = {
+            "ground": "⚔️ نیروی زمینی",
+            "air": "✈️ نیروی هوایی",
+            "sea": "🚢 نیروی دریایی",
+            "defense": "🛡 پدافند",
+            "missile": "🚀 موشک‌ها",
+            "specialist": "🧠 متخصصان",
+            "cyber": "💻 فناوری/سایبر",
+            "nuclear": "☢️ هسته‌ای",
+            "mine": "⛏ منابع",
+            "infra": "🏗 زیرساخت",
+            "other": "📦 سایر تجهیزات",
+        }
+        lines = ["📦 انبار کشور", ""]
+        try:
+            from modules.ng.oil_resource import get_stock
+            oil = await get_stock(self.db, code)
+            lines.append(f"🛢 نفت ذخیره‌شده: {int(oil):,} بشکه")
+            lines.append("")
+        except Exception:
+            pass
         if not rows:
-            lines.append("خالی")
+            lines.append("خالی است.")
             return "\n".join(lines)
         by_cat: dict = {}
         for r in rows:
@@ -4559,24 +4635,21 @@ class Game:
             items = by_cat.get(cat)
             if not items:
                 continue
-            lines.append(CAT_FA.get(cat, cat))
+            lines.append(cat_title.get(cat, CAT_FA.get(cat, cat)))
             for meta, r in items:
-                q = float(r["quantity"])
-                ctype = eq.consumption_type(r["item_code"])
-                if ctype == "specialist":
-                    extra = f" | شارژ باقیمانده: {int(q)} (هر خرید=۲ استفاده)"
-                elif ctype == "expendable":
-                    extra = " | مصرفی"
-                elif ctype == "sortie":
-                    extra = " | مأموریتی"
+                q = float(r["quantity"] or 0)
+                # Player-facing whole units for countable equipment
+                if q >= 1:
+                    q_show = f"{int(q):,} عدد"
+                elif q > 0:
+                    # residual fraction under 1 shown as کمتر از ۱ (data preserved)
+                    q_show = "کمتر از ۱ عدد"
                 else:
-                    extra = ""
-                dmg, dfn = eq.damage_of(r["item_code"]), eq.defense_of(r["item_code"])
-                lines.append(
-                    f"• {meta.get('name_fa')}: {q:g} | آسیب {dmg:g} | دفاع {dfn:g}{extra}"
-                )
+                    continue
+                name = meta.get("name_fa") or r["item_code"]
+                lines.append(f"• {name}: {q_show}")
             lines.append("")
-        return "\n".join(lines)
+        return "\n".join(lines).rstrip()
 
 
     async def cart_set(self, pid: int, item: str, qty: float) -> str:
