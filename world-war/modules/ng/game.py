@@ -881,7 +881,7 @@ class Game:
         if not meta:
             raise GameError("کالا یافت نشد")
         # Custom typed qty and buttons share the same hard cap: 250 per cart line
-        CART_LINE_CAP = 250.0
+        CART_LINE_CAP = 1000.0
         max_one = float(meta.get("max_per_order") or 10)
         if max_one < 1:
             max_one = 1
