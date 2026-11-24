@@ -142,7 +142,9 @@ class Game:
         except Exception:
             pass
         try:
-            await self.legendary.ensure_tables()
+            # Legendary system removed from gameplay; keep table ensure best-effort only
+            if getattr(self, "legendary", None) is not None:
+                await self.legendary.ensure_tables()
             try:
                 await self.db.execute(
                     "UPDATE ng_country_control SET base_daily_income=300000000 WHERE COALESCE(base_daily_income,0)<300000000"
@@ -885,13 +887,16 @@ class Game:
             max_one = 1
         cart_cap = CART_LINE_CAP
         try:
-            qty = float(qty)
-        except (TypeError, ValueError):
-            qty = 1.0
-        # Allow 0 (no-op) through typed input; buttons always >=1
+            from modules.ng.store_service import to_whole_qty
+            qty = float(to_whole_qty(qty))
+        except Exception:
+            try:
+                qty = float(int(float(qty)))
+            except (TypeError, ValueError):
+                qty = 1.0
         if qty <= 0:
             return "⚠ مقدار باید بین ۱ تا ۲۵۰ باشد."
-        qty = max(1.0, min(CART_LINE_CAP, qty))
+        qty = max(1.0, min(CART_LINE_CAP, float(int(qty))))
         row = await self.db.fetchrow(
             "SELECT quantity FROM ng_cart WHERE player_id=$1 AND item_code=$2", (pid, item)
         )
@@ -953,9 +958,13 @@ class Game:
     async def checkout(self, pid: int, country_code: str) -> str:
         await self.assert_can_shop(pid)
         try:
-            await self.legendary.assert_can_shop(country_code)
-        except LegendaryError as e:
-            raise GameError(str(e)) from e
+            from modules.ng.store_service import acquire_checkout_lock
+            if not acquire_checkout_lock(pid):
+                raise GameError("⏳ درخواست خرید قبلی هنوز در حال پردازش است. چند لحظه صبر کنید.")
+        except GameError:
+            raise
+        except Exception:
+            pass
         _, total, items = await self.cart_view(pid, country_code)
         if not items:
             raise GameError("سبد خالی است.")
@@ -993,7 +1002,7 @@ class Game:
                 else:
                     await tx.execute(
                         "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
-                        (country_code, it["item_code"], q),
+                        (country_code, it["item_code"], float(int(q))),
                     )
                 if int(it.get("is_building") or 0):
                     for _ in range(int(q)):
@@ -2494,11 +2503,7 @@ class Game:
             return True, ""
         # Anonymous hacker: no attack cooldown / legendary block; still need equipment
         is_hack = False  # ANON is normal country
-        if not is_hack:
-            try:
-                await self.legendary.assert_can_attack(code)
-            except LegendaryError as e:
-                return False, str(e)
+        # Legendary locks removed
         kinds = [kind] if kind else ["ground", "air", "sea"]
         any_power = 0.0
         for k in kinds:
@@ -4575,6 +4580,57 @@ class Game:
             )
 
 
+
+    async def trade_oil(
+        self, seller_code: str, buyer_code: str, barrels: float, unit_price: float, seller_pid: int
+    ) -> str:
+        buyer = await self.db.fetchrow(
+            "SELECT owner_player_id FROM ng_countries WHERE country_code=$1", (buyer_code,)
+        )
+        if not buyer or buyer.get("owner_player_id") is None:
+            raise GameError("کشور خریدار معتبر نیست.")
+        try:
+            from modules.ng.oil_trade import execute_oil_trade
+            msg = await execute_oil_trade(
+                self.db,
+                seller_code=seller_code,
+                buyer_code=buyer_code,
+                barrels=barrels,
+                unit_price=unit_price,
+                seller_pid=seller_pid,
+                buyer_pid=int(buyer["owner_player_id"]),
+            )
+        except ValueError as e:
+            raise GameError(str(e)) from e
+        await self.log_activity(
+            "oil_trade",
+            f"فروش نفت {int(float(barrels))} به {buyer_code} @{int(float(unit_price))}",
+            seller_code,
+            seller_pid,
+        )
+        try:
+            await self.sync_cash_from_country(seller_code)
+            await self.sync_cash_from_country(buyer_code)
+        except Exception:
+            log.exception("sync after oil trade")
+        return msg
+
+    async def oil_panel_text(self, code: str) -> str:
+        from modules.ng.oil_resource import get_stock, BASE_OIL_UNIT_PRICE
+        stock = await get_stock(self.db, code)
+        try:
+            mult = await self.control.global_oil_price_mult()
+        except Exception:
+            mult = 1.0
+        price = int(BASE_OIL_UNIT_PRICE * float(mult))
+        return (
+            f"🛢 پنل نفت — {code}\n\n"
+            f"موجودی: {int(stock):,} بشکه\n"
+            f"قیمت مرجع بازار: {price:,}\n"
+            f"ضریب بازار: ×{float(mult):.2f}\n\n"
+            "پالایشگاه‌ها و میدان نفتی هر روز (تهران) نفت تولید می‌کنند."
+        )
+
     async def produce_oil_daily_all(self) -> int:
         """Idempotent daily oil production for all owned countries."""
         from modules.ng.oil_resource import produce_daily_for_country, ensure_tables
@@ -6635,14 +6691,7 @@ class Game:
         un_atk = self.is_un_force(attacker, pid)
         hack_atk = self.is_hacker_force(attacker, pid)
         free_atk = un_atk or hack_atk
-        if not free_atk:
-            try:
-                await self.legendary.assert_can_nuke(attacker)
-                await self.legendary.assert_can_attack(attacker)
-            except LegendaryError as e:
-                raise GameError(str(e)) from e
-            if await self.legendary.is_immune(defender):
-                raise GameError("کشور هدف مصونیت دارد؛ حمله اتمی بی‌اثر است.")
+        # Legendary system removed — no immunity / lock checks
         """Abstract nuclear strike: consumes 1 bomb, deals 25-35% max_hp damage."""
         meta = await self.db.fetchrow("SELECT * FROM world_meta WHERE id=1")
         if not free_atk and meta and int(meta.get("war_enabled") or 0) != 1:
@@ -6651,6 +6700,16 @@ class Game:
             raise GameError("قابلیت هسته‌ای بازی توسط سازمان ملل غیرفعال است. از /panel آن را فعال کنید.")
         if not free_atk and await self.at_peace(attacker, defender):
             raise GameError("پیمان صلح فعال است؛ حمله ممکن نیست.")
+        if not free_atk:
+            try:
+                ma = await self.alliances.member_of(attacker)
+                md = await self.alliances.member_of(defender)
+                if ma and md and int(ma.get("alliance_id") or 0) == int(md.get("alliance_id") or 0):
+                    raise GameError("⚠️ شما با این کشور هم‌پیمان هستید و نمی‌توانید به آن حمله کنید.")
+            except GameError:
+                raise
+            except Exception:
+                log.exception("alliance nuclear attack check")
         if attacker == defender:
             raise GameError("نامعتبر")
         test_atk = await self.is_test_active_for_country(attacker) or free_atk

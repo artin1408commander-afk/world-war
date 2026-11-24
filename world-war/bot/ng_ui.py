@@ -212,7 +212,8 @@ def more_menu_rows():
         [("🤝 روابط خارجی", "ng:more:diplo"), ("⚖ پیمان‌ها", "ng:more:treaty")],
         [("📜 بیانیه", "ng:more:stmt"), ("پیمان NPT", "ng:more:npt")],
         [("🌐 بازار آزاد", "ng:more:mkt"), ("🚢 تجارت", "ng:more:trade")],
-        [("🏭 کارگاه", "ng:more:workshop"), ("💰 کیف پول", "ng:more:wallet")],
+        [("🏭 کارگاه", "ng:more:workshop"), ("🛢 نفت", "ng:more:oil")],
+        [("💰 کیف پول", "ng:more:wallet")],
         [("📊 گزارش‌ها", "ng:more:report"), ("🎁 دعوت", "ng:more:ref")],
         [("💎 حمایت مالی", "ng:more:donate"), ("ℹ️ درباره ما", "ng:more:about")],
         back_row(),
@@ -845,6 +846,10 @@ def register_handlers(bot, app_ctx: dict):
                 if game.is_primary_owner(pid):
                     rows.append([("➕ افزودن مالک جدید", "ng:owners"), ("🛡 لیست مالکان", "ng:owners")])
                 rows += [
+                    [("👤 بازیکنان", "ng:o:hub:players"), ("🗺 کشورها", "ng:o:hub:countries")],
+                    [("💰 اقتصاد", "ng:o:hub:economy"), ("📦 تجهیزات", "ng:o:hub:inventory")],
+                    [("🕊 دیپلماسی", "ng:o:hub:diplo"), ("⚔️ جنگ‌ها", "ng:o:hub:wars")],
+                    [("⚙️ تنظیمات", "ng:o:hub:settings"), ("📋 گزارش‌ها", "ng:o:hub:logs")],
                     [("بازیکنان", "ng:o:players"), ("وضعیت جهان", "ng:o:world")],
                     [("🌐 مدیریت اتحادها", "ng:oally"), ("📊 آمار دعوت", "ng:orefstats")],
                     [("🏷 گروه‌های رزرو اتحاد", "ng:oapool")],
@@ -2640,6 +2645,25 @@ def register_handlers(bot, app_ctx: dict):
                         ]),
                     )
                     return
+                if key == "oil":
+                    if not code:
+                        await out("هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.")
+                        return
+                    nav_push(pid, "oil")
+                    try:
+                        txt = await game.oil_panel_text(code)
+                    except Exception:
+                        txt = "🛢 پنل نفت"
+                    await out(
+                        txt,
+                        ik([
+                            [("🛒 خرید نفت از فروشگاه", "ng:shop:mine")],
+                            [("🤝 فروش نفت به بازیکن", "ng:oil:sell")],
+                            [("📦 انبار", "ng:go:inv")],
+                            back_row(),
+                        ]),
+                    )
+                    return
                 if key == "workshop":
                     if not code:
                         await out("هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.")
@@ -3226,6 +3250,16 @@ def register_handlers(bot, app_ctx: dict):
                 rows.append([("🛒 سبد", "ng:cart"), ("⬅️ دسته‌ها", "ng:shophome")])
                 rows.append(back_row())
                 await out(f"🛒 {title}\n{len(items)} محصول:", ik(rows))
+                return
+            if data == "ng:oil:sell":
+                if not code:
+                    await out("کشور ندارید.")
+                    return
+                await _set_pending(game, pid, "oil_sell_target")
+                await out(
+                    "🛢 فروش نفت به بازیکن\n\nکد کشور خریدار را بفرستید (مثال: US):",
+                    ik([cancel_row()]),
+                )
                 return
             if data == "ng:shophome":
                 try:
@@ -4392,6 +4426,66 @@ def register_handlers(bot, app_ctx: dict):
                 return
 
             # owner panel
+
+            if data.startswith("ng:o:hub:"):
+                if not owner:
+                    await out("❌ دسترسی مجاز نیست.")
+                    return
+                hubk = data.split(":")[-1]
+                if hubk == "players":
+                    await out("👤 مدیریت بازیکنان", ik([
+                        [("بازیکنان", "ng:o:players"), ("بن کاربر", "ng:oban")],
+                        [("آنبن کاربر", "ng:ounban"), ("🔍 جستجوی بن", "ng:obansearch")],
+                        [("🧪 حساب تستی", "ng:otest")],
+                        back_row(),
+                    ]))
+                elif hubk == "countries":
+                    await out("🗺 کشورها", ik([
+                        [("وضعیت جهان", "ng:o:world"), ("❤️ دیدن HP", "ng:ohp")],
+                        [("🏅 رنکینگ", "ng:orank"), ("⚖️ محکوم کردن", "ng:ocondemn")],
+                        back_row(),
+                    ]))
+                elif hubk == "economy":
+                    await out("💰 اقتصاد", ik([
+                        [("💰 پرداخت درآمد روزانه", "ng:odaily"), ("💵 پول همگانی", "ng:ogiveall")],
+                        [("تغییر پول کشور", "ng:omoney"), ("💰 مالیات", "ng:otax")],
+                        [("🔒 قطع خرید", "ng:oshop:1"), ("🔓 آزاد خرید", "ng:oshop:0")],
+                        back_row(),
+                    ]))
+                elif hubk == "inventory":
+                    await out("📦 تجهیزات", ik([
+                        [("❤️ جون همگانی", "ng:ohpall"), ("🛒 فروشگاه", "ng:shophome")],
+                        back_row(),
+                    ]))
+                elif hubk == "diplo":
+                    await out("🕊 دیپلماسی", ik([
+                        [("🌐 مدیریت اتحادها", "ng:oally"), ("🏷 گروه‌های رزرو", "ng:oapool")],
+                        [("بیانیه‌ها", "ng:ostmt"), ("NPT", "ng:onpt")],
+                        [("📜 قوانین", "ng:olaws")],
+                        back_row(),
+                    ]))
+                elif hubk == "wars":
+                    await out("⚔️ جنگ", ik([
+                        [("جنگ باز", "ng:owar:1"), ("جنگ بسته", "ng:owar:0")],
+                        [("هسته‌ای فعال", "ng:onuke:1"), ("هسته‌ای خاموش", "ng:onuke:0")],
+                        [("کول‌داون ۳۰ث", "ng:ocd:30"), ("۲د", "ng:ocd:120"), ("۵د", "ng:ocd:300")],
+                        back_row(),
+                    ]))
+                elif hubk == "settings":
+                    await out("⚙️ تنظیمات", ik([
+                        [("📝 /start", "ng:ostart"), ("ℹ️ درباره", "ng:oabout")],
+                        [("عضویت اجباری", "ng:oforce"), ("لاگ‌ها", "ng:ologs")],
+                        back_row(),
+                    ]))
+                elif hubk == "logs":
+                    await out("📋 گزارش‌ها", ik([
+                        [("وضعیت جهان", "ng:o:world"), ("آمار دعوت", "ng:orefstats")],
+                        back_row(),
+                    ]))
+                else:
+                    await out("بخش نامعتبر.")
+                return
+
 
             # workshop
             if data.startswith("ng:ws:"):

@@ -17,11 +17,8 @@ def run(c):
 
 
 async def boot(tmp_path, owner=900001):
-    settings = Settings(
-        bale_token="",
+    settings = Settings.for_test(
         owner_id=owner,
-        database_mode="sqlite",
-        database_url="",
         sqlite_path=tmp_path / "ng.db",
         log_level="WARNING",
         world_start_date="2020-01-01",

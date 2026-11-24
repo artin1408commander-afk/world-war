@@ -230,8 +230,83 @@ class Settings:
     donation_cooldown_hours: int
     donation_min_amount: float
 
+
+    @staticmethod
+    def for_test(
+        *,
+        owner_id: int = 900001,
+        sqlite_path: Path | None = None,
+        log_level: str = "WARNING",
+        world_start_date: str = "2020-01-01",
+        real_days_per_game_year: int = 15,
+        **overrides,
+    ) -> "Settings":
+        """Minimal Settings for unit tests (does not require BALE_TOKEN)."""
+        base = dict(
+            bale_token="",
+            owner_id=owner_id,
+            admin_ids=tuple(),
+            bot_username="testbot",
+            bot_name="WORLD WAR TEST",
+            support_username="",
+            main_group="@test",
+            database_mode="sqlite",
+            database_url="sqlite://test",
+            sqlite_path=sqlite_path or Path(":memory:"),
+            postgres_host="",
+            postgres_port=5432,
+            postgres_db="",
+            postgres_user="",
+            database_pool_min_size=1,
+            database_pool_max_size=2,
+            database_connect_timeout=5.0,
+            database_command_timeout=30.0,
+            database_statement_timeout_ms=0,
+            log_level=log_level,
+            port=8080,
+            python_unbuffered=True,
+            mise_python_github_attestations="false",
+            world_start_date=world_start_date,
+            real_days_per_game_year=real_days_per_game_year,
+            attack_cooldown_sec=60,
+            cyber_hack_cooldown_sec=60,
+            daily_income_base=300_000_000.0,
+            un_starting_treasury=0.0,
+            max_loot_abs=2_000_000.0,
+            ref_invitee_reward=30_000_000.0,
+            ref_referrer_reward=30_000_000.0,
+            bomb_money_cost=1_000_000.0,
+            ws_upgrade_base=1_000_000.0,
+            ws_uranium_base_cost=100_000.0,
+            ws_uranium_base_amount=1.0,
+            ws_uranium_base_minutes=10.0,
+            ws_research_base_cost=100_000.0,
+            ws_research_base_points=1.0,
+            ws_research_base_minutes=10.0,
+            alliance_base_create_cost=2_000_000,
+            alliance_cost_per_extra_member=200_000,
+            alliance_cost_per_100m_treasury=150_000,
+            alliance_base_member_slots=2,
+            alliance_base_treasury_cap=100_000_000.0,
+            alliance_min_members=2,
+            alliance_max_members=20,
+            alliance_min_treasury_cap=50_000_000.0,
+            alliance_max_treasury_cap=5_000_000_000.0,
+            alliance_max_create_cost=7_000_000,
+            alliance_rename_cost=5_000_000,
+            alliance_betrayal_window_sec=3 * 3600,
+            alliance_betrayal_penalty_sec=6 * 3600,
+            alliance_destroy_wait_sec=30 * 60,
+            donation_max_requests_per_day=3,
+            donation_cooldown_hours=3,
+            donation_min_amount=1000.0,
+        )
+        base.update(overrides)
+        return Settings(**base)
+
     @property
     def is_postgres(self) -> bool:
+
         return self.database_mode == "postgres"
 
     @property
