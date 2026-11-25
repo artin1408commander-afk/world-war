@@ -227,6 +227,33 @@ async def owner_inbox_loop(game: Game, bot, owner_id: int):
         await asyncio.sleep(12)
 
 
+
+async def world_news_loop(game: Game):
+    """Every hour (Tehran): one unique world news to groups + all PVs."""
+    import asyncio
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    TEHRAN = ZoneInfo("Asia/Tehran")
+    # Align roughly to clock hours
+    while True:
+        try:
+            from modules.ng.world_news import publish_hourly_news, hour_key, already_sent_this_hour, ensure_tables
+            await ensure_tables(game.db)
+            if not await already_sent_this_hour(game.db):
+                text = await publish_hourly_news(game)
+                if text:
+                    log.info("hourly world news sent (%s)", hour_key())
+            # sleep until next Tehran hour (+5s)
+            now = datetime.now(TEHRAN)
+            secs = 3600 - (now.minute * 60 + now.second) + 5
+            if secs < 30:
+                secs += 3600
+            await asyncio.sleep(min(secs, 600))  # wake often enough; publish is idempotent per hour
+        except Exception:
+            log.exception("world_news_loop")
+            await asyncio.sleep(120)
+
+
 async def async_main() -> None:
     settings = load_settings()
     logging.getLogger().setLevel(settings.log_level)
@@ -257,6 +284,7 @@ async def async_main() -> None:
             log.exception("startup inactive purge")
 
         asyncio.create_task(daily_loop(game))
+        asyncio.create_task(world_news_loop(game))
 
         if not settings.bale_token:
             log.error("BALE_TOKEN missing — offline bootstrap only")
