@@ -8864,6 +8864,82 @@ class Game:
             pass
         return chr(10).join(lines)
 
+
+    async def lucky_spin_panel(self, pid: int) -> str:
+        from modules.ng.lucky_spin import status, panel_text, ensure_tables
+        await ensure_tables(self.db)
+        st = await status(self.db, pid)
+        return panel_text(st)
+
+    async def lucky_spin(self, pid: int) -> str:
+        """Spin wheel; grant prize to player's country. One per 6h."""
+        from modules.ng.lucky_spin import status, pick_prize, mark_spin, format_wait, ensure_tables
+        from modules.ng.oil_resource import add_stock
+        await ensure_tables(self.db)
+        pid = int(pid)
+        st = await status(self.db, pid)
+        if not st.get("ready"):
+            raise GameError(f"هنوز زود است. {format_wait(int(st.get('wait_sec') or 0))} صبر کنید.")
+        code = await self.player_country(pid)
+        if not code:
+            raise GameError("ابتدا کشور انتخاب کنید، بعد چرخ شانس را بچرخانید.")
+        prize_id, label, kind, payload = pick_prize()
+        if kind == "money":
+            amount = float(payload)
+            async with self.db.transaction() as tx:
+                c = await tx.fetchrow(
+                    "SELECT treasury FROM ng_countries WHERE country_code=$1 AND owner_player_id=$2",
+                    (code, pid),
+                )
+                if not c:
+                    raise GameError("مالکیت کشور معتبر نیست.")
+                await tx.execute(
+                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
+                    (float(c["treasury"] or 0) + amount, code),
+                )
+            try:
+                await self.sync_cash_from_country(code)
+            except Exception:
+                log.exception("spin cash sync")
+        elif kind == "oil":
+            await add_stock(self.db, code, float(payload))
+        elif kind == "item":
+            item_code, qty = payload
+            qty = float(int(qty))
+            meta = self._cat.get(item_code) or {}
+            inv = await self.db.fetchrow(
+                "SELECT quantity FROM ng_inventory WHERE country_code=$1 AND item_code=$2",
+                (code, item_code),
+            )
+            if inv:
+                await self.db.execute(
+                    "UPDATE ng_inventory SET quantity=$1 WHERE country_code=$2 AND item_code=$3",
+                    (float(inv["quantity"]) + qty, code, item_code),
+                )
+            else:
+                await self.db.execute(
+                    "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
+                    (code, item_code, qty),
+                )
+            if int(meta.get("is_building") or 0):
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc).isoformat()
+                for _ in range(int(qty)):
+                    nid = await self.db.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_buildings")
+                    await self.db.execute(
+                        "INSERT INTO ng_buildings (id, country_code, building_code, level, built_at, active) VALUES ($1,$2,$3,1,$4,1)",
+                        (int(nid["id"]), code, item_code, now),
+                    )
+            try:
+                await self.recalc_income(code)
+            except Exception:
+                log.exception("spin recalc")
+        else:
+            raise GameError("جایزه نامعتبر")
+        await mark_spin(self.db, pid, label)
+        await self.log_activity("lucky_spin", f"چرخ شانس: {label}", code, pid)
+        return f"🎉 چرخ شانس چرخید!\n\n🏆 جایزه شما: {label}\n✅ به دارایی کشورتان اضافه شد."
+
     def _make_ref_code(self, pid: int) -> str:
         return f"WW{int(pid)}"
 
@@ -8944,25 +9020,42 @@ class Game:
             raise GameError("نمی‌توانید کد خودتان را وارد کنید.")
 
         owner_row = None
+        variants = []
         for cand in (code_u, code_u.removeprefix("WW"), f"WW{code_u.removeprefix('WW')}"):
-            owner_row = await self.db.fetchrow(
-                "SELECT * FROM ng_referrals WHERE UPPER(REPLACE(TRIM(referral_code),' ',''))=$1",
-                (cand,),
-            )
+            c = (cand or "").strip().upper()
+            if c and c not in variants:
+                variants.append(c)
+        for cand in variants:
+            try:
+                owner_row = await self.db.fetchrow(
+                    "SELECT * FROM ng_referrals WHERE UPPER(TRIM(COALESCE(referral_code,'')))=$1",
+                    (cand,),
+                )
+            except Exception:
+                owner_row = None
             if owner_row:
                 break
-            owner_row = await self.db.fetchrow(
-                "SELECT * FROM ng_referrals WHERE UPPER(TRIM(referral_code))=$1",
-                (cand,),
-            )
+            try:
+                owner_row = await self.db.fetchrow(
+                    "SELECT * FROM ng_referrals WHERE REPLACE(UPPER(TRIM(COALESCE(referral_code,''))),' ','')=$1",
+                    (cand.replace(" ", ""),),
+                )
+            except Exception:
+                owner_row = None
             if owner_row:
                 break
-        if not owner_row and code_u.removeprefix("WW").isdigit():
-            cand_pid = int(code_u.removeprefix("WW"))
-            await self.ensure_referral_row(cand_pid)
-            owner_row = await self.db.fetchrow(
-                "SELECT * FROM ng_referrals WHERE player_id=$1", (cand_pid,)
-            )
+        if not owner_row:
+            digits = code_u.removeprefix("WW")
+            if digits.isdigit():
+                cand_pid = int(digits)
+                try:
+                    await self.ensure_referral_row(cand_pid)
+                    owner_row = await self.db.fetchrow(
+                        "SELECT * FROM ng_referrals WHERE player_id=$1", (cand_pid,)
+                    )
+                except Exception:
+                    log.exception("referral by pid")
+                    owner_row = None
 
         if not owner_row:
             raise GameError("کد دعوت نامعتبر است. کد را دقیق وارد کنید (مثال: WW123456).")
@@ -8977,7 +9070,28 @@ class Game:
         my_code = await self.player_country(pid)
         ref_code_c = await self.player_country(rid)
         if not my_code:
-            raise GameError("ابتدا کشور انتخاب کنید، بعد کد دعوت را وارد کنید.")
+            try:
+                await self.db.execute(
+                    """CREATE TABLE IF NOT EXISTS ng_pending_referral (
+                        player_id BIGINT PRIMARY KEY,
+                        code TEXT NOT NULL,
+                        created_at TEXT
+                    )"""
+                )
+                from datetime import datetime, timezone
+                await self.db.execute(
+                    """
+                    INSERT INTO ng_pending_referral (player_id, code, created_at) VALUES ($1,$2,$3)
+                    ON CONFLICT (player_id) DO UPDATE SET code=$2, created_at=$3
+                    """,
+                    (pid, code_u, datetime.now(timezone.utc).isoformat()),
+                )
+            except Exception:
+                log.exception("save pending referral")
+            return (
+                f"🎟 کد دعوت «{code_u}» ذخیره شد.\n"
+                "بعد از انتخاب کشور به‌صورت خودکار اعمال می‌شود."
+            )
         if not ref_code_c:
             raise GameError("دعوت‌کننده هنوز کشور ندارد؛ بعداً تلاش کنید.")
 

@@ -2079,9 +2079,10 @@ def register_handlers(bot, app_ctx: dict):
                         f"#{L['id']} {name} ×{int(float(L['quantity']))} | {int(float(L['unit_price'])):,}",
                         f"ng:mbuy:{L['id']}",
                     )])
-                rows.append([("آگهی‌های من", "ng:mmine")])
+                rows.append([("📢 ثبت آگهی جدید", "ng:mnew"), ("📋 آگهی‌های من", "ng:mmine")])
+                rows.append([("🔄 تازه‌سازی", "ng:more:mkt")])
                 rows.append(back_row())
-                await reply(message, "🌐 بازار آزاد جهانی", ik(rows))
+                await reply(message, "🌐 بازار آزاد جهانی\nآگهی‌ها را ببینید یا آگهی بگذارید:", ik(rows))
                 return
 
             if text == BTN_TRADE:
@@ -2690,9 +2691,10 @@ def register_handlers(bot, app_ctx: dict):
                             f"#{L['id']} {name} ×{int(float(L['quantity']))} | {int(float(L['unit_price'])):,}",
                             f"ng:mbuy:{L['id']}",
                         )])
-                    rows.append([("آگهی‌های من", "ng:mmine")])
+                    rows.append([("📢 ثبت آگهی جدید", "ng:mnew"), ("📋 آگهی‌های من", "ng:mmine")])
+                    rows.append([("🔄 تازه‌سازی", "ng:more:mkt")])
                     rows.append(back_row())
-                    await out("🌐 بازار آزاد جهانی", ik(rows))
+                    await out("🌐 بازار آزاد جهانی\nآگهی‌ها را ببینید یا آگهی بگذارید:", ik(rows))
                     return
                 if key == "trade":
                     if not code:
@@ -3171,14 +3173,33 @@ def register_handlers(bot, app_ctx: dict):
                 try:
                     code_c = (data.split(":")[-1] or "").upper()
                     c = await game.claim(pid, code_c)
-                    # apply saved referral code (from /start deep-link or pending)
+                    # apply saved referral code (from /start deep-link or pending DB)
                     try:
+                        preset = None
                         st_ref = _pending.get(pid) or {}
-                        preset = st_ref.get("preset") if st_ref.get("kind") == "ref_code" else None
+                        if st_ref.get("kind") == "ref_code" and st_ref.get("preset"):
+                            preset = st_ref.get("preset")
+                        if not preset:
+                            try:
+                                prow = await game.db.fetchrow(
+                                    "SELECT code FROM ng_pending_referral WHERE player_id=$1",
+                                    (pid,),
+                                )
+                                if prow:
+                                    preset = prow.get("code")
+                            except Exception:
+                                pass
                         if preset:
                             try:
                                 ref_msg = await game.apply_referral_code(pid, str(preset))
                                 _pending.pop(pid, None)
+                                try:
+                                    await game.db.execute(
+                                        "DELETE FROM ng_pending_referral WHERE player_id=$1",
+                                        (pid,),
+                                    )
+                                except Exception:
+                                    pass
                                 await out(ref_msg)
                             except GameError as e_ref:
                                 await out(f"🎟 کد دعوت: {e_ref}")
@@ -3538,13 +3559,61 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ {e}")
                 return
 
+
+            # lucky spin
+            if data == "ng:spin" or data == "ng:spin:panel":
+                try:
+                    txt = await game.lucky_spin_panel(pid)
+                except Exception:
+                    log.exception("spin panel")
+                    txt = "🎰 چرخ شانس"
+                await out(txt, ik([
+                    [("🎲 چرخاندن چرخ", "ng:spin:go")],
+                    back_row(),
+                ]))
+                return
+            if data == "ng:spin:go":
+                try:
+                    msg = await game.lucky_spin(pid)
+                    await out(msg, ik([
+                        [("🎰 وضعیت چرخ", "ng:spin")],
+                        back_row(),
+                    ]), force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", ik([[("🎰 بازگشت", "ng:spin")], back_row()]))
+                except Exception:
+                    log.exception("spin go")
+                    await out("❌ خطا در چرخ شانس.", ik([[("🎰 بازگشت", "ng:spin")]]))
+                return
+
+            if data == "ng:mnew":
+                if not code:
+                    await out("هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                inv = await game.db.fetch(
+                    "SELECT * FROM ng_inventory WHERE country_code=$1 AND quantity>0 ORDER BY item_code",
+                    (code,),
+                )
+                if not inv:
+                    await out("انبار خالی است؛ چیزی برای فروش ندارید.", ik([back_row()]))
+                    return
+                rows = []
+                for r in inv[:40]:
+                    meta = game._cat.get(r["item_code"]) or {}
+                    name = meta.get("name_fa") or r["item_code"]
+                    q = int(float(r["quantity"] or 0))
+                    rows.append([(f"{name} ×{q}", f"ng:sell:{r['item_code']}")])
+                rows.append(back_row())
+                await out("کدام کالا را در بازار آگهی می‌کنید؟", ik(rows))
+                return
+
             # market
             if data.startswith("ng:sell:"):
                 if not code:
                     await out("هنوز کشوری تحت فرمان شما نیست.")
                     return
-                _pending[pid] = {"kind": "mkt_qty", "item": data.split(":")[-1]}
-                await out("تعداد برای فروش را بنویسید:")
+                await _set_pending(game, pid, "mkt_qty", item=data.split(":")[-1])
+                await out("تعداد برای فروش را بنویسید:", ik([cancel_row()]))
                 return
             if data.startswith("ng:mbuy:"):
                 if not code:
@@ -4865,8 +4934,12 @@ def register_handlers(bot, app_ctx: dict):
                 )
                 return
             if data == "ng:refenter":
-                _pending[pid] = {"kind": "ref_code"}
-                await out("لطفاً کد دعوت دوستت را وارد کن\nمثال: WW123456\n(هر دو نفر باید کشور داشته باشند)")
+                await _set_pending(game, pid, "ref_code")
+                await out(
+                    "لطفاً کد دعوت دوستت را وارد کن\nمثال: WW123456\n"
+                    "اگر هنوز کشور نداری، کد ذخیره می‌شود و بعد از انتخاب کشور اعمال می‌گردد.",
+                    ik([cancel_row()]),
+                )
                 return
 
             if data == "ng:o:psearch":

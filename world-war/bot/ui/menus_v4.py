@@ -81,7 +81,7 @@ def more_hub_rows() -> list:
         [("⚔️ عملیات نظامی", "ng:v4:more:mil"), ("🕊 دیپلماسی", "ng:v4:more:diplo")],
         [("🛢 نفت و انرژی", "ng:v4:more:oil"), ("🏭 صنعت/کارگاه", "ng:v4:more:industry")],
         [("📜 قانون و بیانیه", "ng:v4:more:docs"), ("📊 گزارش و دعوت", "ng:v4:more:info")],
-        [("💎 حمایت", "ng:v4:more:support")],
+        [("💎 حمایت", "ng:v4:more:support"), ("🎰 چرخ شانس", "ng:spin")],
         [("🔙 بازگشت", "ng:back"), ("🏠 خانه", "ng:home")],
     ]
 
@@ -105,7 +105,7 @@ def diplo_menu_rows() -> list:
 def industry_menu_rows() -> list:
     return [
         [("🏭 کارگاه", "ng:more:workshop"), ("🌐 بازار آزاد", "ng:more:mkt")],
-        [("🚢 تجارت/کمک", "ng:more:trade")],
+        [("🚢 تجارت/کمک", "ng:more:trade"), ("🎰 چرخ شانس", "ng:spin")],
         [("🔙 بازگشت", "ng:v4:more:hub"), ("🏠 خانه", "ng:home")],
     ]
 
