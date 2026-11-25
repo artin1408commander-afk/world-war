@@ -662,7 +662,7 @@ class Game:
                         """
                         UPDATE ng_countries
                         SET owner_player_id=NULL, claimed_at=NULL, is_destroyed=0,
-                            hp=COALESCE(NULLIF(max_hp,0),1000),
+                            hp=1000, max_hp=1000,
                             daily_income=0, daily_expense=0
                         WHERE country_code=$1
                         """,
@@ -817,7 +817,7 @@ class Game:
             # atomic claim — treasury from persistent cash
             await tx.execute(
                 """
-                UPDATE ng_countries SET owner_player_id=$1, treasury=$2, claimed_at=$3, hp=1000, max_hp=COALESCE(NULLIF(max_hp,0),1000), is_destroyed=0
+                UPDATE ng_countries SET owner_player_id=$1, treasury=$2, claimed_at=$3, hp=1000, max_hp=1000, is_destroyed=0, double_hp=0
                 WHERE country_code=$4 AND owner_player_id IS NULL
                 """,
                 (pid, start_money, now, code),
@@ -1965,6 +1965,38 @@ class Game:
                 + "کشور شما نابود شده و تا وقتی مالک هاردکور را خاموش نکند نمی‌توانید کشور جدید بگیرید."
             )
 
+
+    async def admin_set_all_hp_full(self, actor: int) -> str:
+        """Set every living (non-destroyed) country to exactly 1000/1000 HP."""
+        if not self.is_owner(int(actor)):
+            raise GameError("فقط مالک")
+        rows = await self.db.fetch(
+            """
+            SELECT country_code, name_fa, is_destroyed
+            FROM ng_countries
+            WHERE COALESCE(is_destroyed, 0) = 0
+            """
+        )
+        ok = 0
+        for r in rows or []:
+            try:
+                await self.db.execute(
+                    """
+                    UPDATE ng_countries
+                    SET hp=1000, max_hp=1000, double_hp=0
+                    WHERE country_code=$1
+                    """,
+                    (r["country_code"],),
+                )
+                ok += 1
+            except Exception:
+                log.exception("set_all_hp %s", r.get("country_code"))
+        await self.admin_log(int(actor), "set_all_hp_full", f"ok={ok}")
+        return (
+            f"✅ سلامت همه کشورهای زنده روی ۱۰۰۰/۱۰۰۰ تنظیم شد.\n"
+            f"تعداد: {ok}"
+        )
+
     async def admin_adjust_hp_all(self, actor: int, delta: float) -> str:
         """Mass HP change for all owned countries. + raises max_hp if needed; - floors at 0."""
         if not self.is_owner(int(actor)):
@@ -1991,9 +2023,10 @@ class Game:
                 new_hp = hp + delta
                 if new_hp < 0:
                     new_hp = 0.0
-                new_max = max_hp
+                # default world cap is 1000/1000; only admin_set_hp may exceed
+                new_max = min(float(max_hp or 1000), 1000.0) or 1000.0
                 if new_hp > new_max:
-                    new_max = new_hp
+                    new_hp = new_max
                 await self.db.execute(
                     "UPDATE ng_countries SET hp=$1, max_hp=$2 WHERE country_code=$3",
                     (new_hp, new_max, code),
@@ -4425,11 +4458,11 @@ class Game:
                 except Exception:
                     pass
             await tx.execute(
-                "UPDATE ng_countries SET owner_player_id=NULL, treasury=0, daily_income=0, daily_expense=0, hp=1000, is_destroyed=0, peace_penalty_until=NULL, claimed_at=NULL WHERE country_code<>$1",
+                "UPDATE ng_countries SET owner_player_id=NULL, treasury=0, daily_income=0, daily_expense=0, hp=1000, max_hp=1000, double_hp=0, is_destroyed=0, peace_penalty_until=NULL, claimed_at=NULL WHERE country_code<>$1",
                 (UN_CODE,),
             )
             await tx.execute(
-                "UPDATE ng_countries SET owner_player_id=$1, is_destroyed=0, treasury=200000000, hp=1000 WHERE country_code=$2",
+                "UPDATE ng_countries SET owner_player_id=$1, is_destroyed=0, treasury=200000000, hp=1000, max_hp=1000, double_hp=0 WHERE country_code=$2",
                 (self.owner_id, UN_CODE),
             )
             now = datetime.now(timezone.utc).isoformat()
@@ -6972,7 +7005,7 @@ class Game:
                             """
                             UPDATE ng_countries
                             SET owner_player_id=NULL, claimed_at=NULL, is_destroyed=0,
-                                hp=COALESCE(NULLIF(max_hp,0),1000),
+                                hp=1000, max_hp=1000,
                                 daily_income=0, daily_expense=0
                             WHERE country_code=$1
                             """,
@@ -7771,7 +7804,7 @@ class Game:
                 owner_player_id=NULL,
                 is_destroyed=0,
                 claimed_at=NULL,
-                hp=COALESCE(NULLIF(max_hp,0),1000),
+                hp=1000, max_hp=1000,
                 daily_income=0,
                 daily_expense=0
             WHERE country_code=$2
@@ -8512,6 +8545,8 @@ class Game:
                         daily_income=0,
                         daily_expense=0,
                         hp=1000,
+                        max_hp=1000,
+                        double_hp=0,
                         is_destroyed=0,
                         claimed_at=NULL
                     WHERE country_code=$1

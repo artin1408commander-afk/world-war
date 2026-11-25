@@ -829,6 +829,7 @@ def register_handlers(bot, app_ctx: dict):
                     rows.append([("➕ افزودن مالک", "ng:owners"), ("🛡 لیست مالکان", "ng:owners")])
                 rows += [
                     [("👤 بازیکنان", "ng:o:hub:players"), ("🗺 کشورها", "ng:o:hub:countries")],
+                    [("🛡 Sethp ۱۰۰۰/۱۰۰۰", "ng:ohpfull")],
                     [("💰 اقتصاد", "ng:o:hub:economy"), ("📦 تجهیزات", "ng:o:hub:inventory")],
                     [("🕊 دیپلماسی", "ng:o:hub:diplo"), ("⚔️ جنگ", "ng:o:hub:wars")],
                     [("⚙️ تنظیمات", "ng:o:hub:settings"), ("📋 گزارش‌ها", "ng:o:hub:logs")],
@@ -2343,6 +2344,71 @@ def register_handlers(bot, app_ctx: dict):
             pid = _uid(cq)
             if not pid or not data:
                 return
+            # --- Nuclear attack confirm: early guaranteed feedback ---
+            if data.startswith("ng:nukego:"):
+                try:
+                    if hasattr(cq, "answer"):
+                        await cq.answer(text="حمله اتمی…", show_alert=False)
+                except Exception:
+                    pass
+                msg0 = getattr(cq, "message", None)
+                try:
+                    await ensure(pid)
+                except Exception:
+                    pass
+                code0 = await game.player_country(pid)
+                dst = data.split(":")[-1]
+
+                async def _nuke_out(text, kb=None):
+                    body = str(text)[:3500]
+                    comp = kb
+                    if msg0 is not None:
+                        for attr in ("edit_text", "edit", "edit_message_text"):
+                            fn = getattr(msg0, attr, None)
+                            if not callable(fn):
+                                continue
+                            try:
+                                try:
+                                    await fn(body, components=comp)
+                                    return
+                                except TypeError:
+                                    await fn(body)
+                                    return
+                            except Exception:
+                                pass
+                        try:
+                            await msg0.reply(body, components=comp)
+                            return
+                        except Exception:
+                            log.exception("nuke reply")
+                if not code0:
+                    await _nuke_out("❌ هنوز کشوری تحت فرمان شما نیست.")
+                    return
+                try:
+                    result = await game.attack_nuclear(code0, dst, pid)
+                    if not result or not str(result).strip():
+                        result = "✅ حمله اتمی با موفقیت انجام شد."
+                    try:
+                        if hasattr(cq, "answer"):
+                            await cq.answer(text="✅ حمله اتمی انجام شد", show_alert=True)
+                    except Exception:
+                        pass
+                    await _nuke_out(
+                        result,
+                        ik([[("⚔️ منوی حمله", "ng:atkmenu")], [("🏠 خانه", "ng:home")]]),
+                    )
+                except GameError as e:
+                    try:
+                        if hasattr(cq, "answer"):
+                            await cq.answer(text=str(e)[:180], show_alert=True)
+                    except Exception:
+                        pass
+                    await _nuke_out(f"❌ {e}", ik([[("⚔️ منوی حمله", "ng:atkmenu")]]))
+                except Exception as e:
+                    log.exception("nukego early")
+                    await _nuke_out(f"❌ خطا در حمله اتمی: {e}", ik([[("⚔️ منوی حمله", "ng:atkmenu")]]))
+                return
+
             # --- Lucky spin: handle early (no 30s menu lock / guaranteed UI update) ---
             if data in ("ng:spin", "ng:spin:panel", "ng:spin:go"):
                 msg0 = getattr(cq, "message", None)
@@ -2446,7 +2512,7 @@ def register_handlers(bot, app_ctx: dict):
                 mid_to = None
                 if msg_to is not None:
                     mid_to = getattr(msg_to, "message_id", None) or getattr(msg_to, "id", None)
-                if data.startswith("ng:") and mid_to is not None and not data.startswith("ng:spin"):
+                if data.startswith("ng:") and mid_to is not None and not data.startswith("ng:spin") and not data.startswith("ng:nukego"):
                     key = (int(pid), int(mid_to))
                     if not MENU_SESSIONS.owned_by(pid, mid_to):
                         try:
@@ -4635,13 +4701,14 @@ def register_handlers(bot, app_ctx: dict):
                     await out(f"❌ خطا در بررسی حمایت: {e}", force_new=True)
                 return
 
-            if data == "ng:atkmenu" or data.startswith("ng:atk:") or data.startswith("ng:fight:") or data.startswith("ng:nuke"):
+            if data == "ng:atkmenu" or data.startswith("ng:atk:") or data.startswith("ng:fight:") or (data.startswith("ng:nuke") and not data.startswith("ng:nukego:")):
                 is_un = owner and (code or "").upper() in ("UN", "UN2", "UN3")
                 is_hack = False
-                meta = await game.db.fetchrow("SELECT war_enabled FROM world_meta WHERE id=1")
+                meta = await game.db.fetchrow("SELECT war_enabled, nuclear_enabled FROM world_meta WHERE id=1")
                 if not is_un and not is_hack and (not meta or not int(meta.get("war_enabled") or 0)):
                     await out(
-                        "⚠️ امکان انجام حمله وجود ندارد.\n\nدر حال حاضر وضعیت جنگ در جهان بسته است.\nسازمان ملل باید جنگ را فعال کند."
+                        "⚠️ امکان انجام حمله وجود ندارد.\n\nدر حال حاضر وضعیت جنگ در جهان بسته است.\nسازمان ملل باید جنگ را فعال کند.",
+                        force_new=True,
                     )
                     return
             
@@ -4789,6 +4856,7 @@ def register_handlers(bot, app_ctx: dict):
                     await out(
                         "👤 مدیریت بازیکنان\nیک گزینه را انتخاب کنید:",
                         ik([
+                            [("🛡 Sethp — همه ۱۰۰۰/۱۰۰۰", "ng:ohpfull")],
                             [("📋 لیست/جستجو", "ng:o:players")],
                             [("🚫 بن کاربر", "ng:oban"), ("✅ آن‌بن", "ng:ounban")],
                             [("🔍 جستجوی کد بن", "ng:obansearch")],
@@ -6187,6 +6255,19 @@ def register_handlers(bot, app_ctx: dict):
                 await out(text_r, ik(rows), force_new=True)
                 return
 
+            if data == "ng:ohpfull":
+                if not owner:
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    msg = await game.admin_set_all_hp_full(pid)
+                    await out(msg, force_new=True)
+                except GameError as e:
+                    await out(f"❌ {e}", force_new=True)
+                except Exception as e:
+                    log.exception("ohpfull")
+                    await out(f"❌ {e}", force_new=True)
+                return
             if data == "ng:opanel":
                 rows = []
                 if game.is_primary_owner(pid):
