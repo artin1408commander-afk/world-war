@@ -1,4 +1,4 @@
-"""Hourly world news — real gameplay events, or unique roleplay if none."""
+"""Hourly world news — narrative headlines from real events, or unique roleplay."""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo
 log = logging.getLogger(__name__)
 TEHRAN = ZoneInfo("Asia/Tehran")
 
-# Kinds from ng_activity that make good "real" news
 REAL_KINDS = (
     "attack",
     "buy",
@@ -32,7 +31,6 @@ REAL_KINDS = (
     "trade",
     "oil_trade",
     "lucky_spin",
-    "daily",
     "statement",
 )
 
@@ -67,7 +65,6 @@ async def ensure_tables(db) -> None:
         )
         """
     )
-    # SQLite-compatible fallback without BIGSERIAL if needed — Postgres on Railway
     try:
         await db.execute(
             """
@@ -97,12 +94,6 @@ def hour_key(now: datetime | None = None) -> str:
     return now.strftime("%Y-%m-%d-%H")
 
 
-def _clean_summary(s: str) -> str:
-    s = (s or "").strip()
-    s = re.sub(r"\s+", " ", s)
-    return s[:280]
-
-
 async def _seen(db, fingerprint: str) -> bool:
     row = await db.fetchrow(
         "SELECT 1 AS x FROM ng_world_news WHERE fingerprint=$1", (fingerprint,)
@@ -123,7 +114,6 @@ async def _remember(db, body: str, source: str) -> None:
             (fp, body, source, now),
         )
     except Exception:
-        # SQLite-style without ON CONFLICT target
         try:
             if not await _seen(db, fp):
                 await db.execute(
@@ -132,6 +122,38 @@ async def _remember(db, body: str, source: str) -> None:
                 )
         except Exception:
             log.exception("remember news")
+
+
+async def _country_label(db, code: str | None) -> str:
+    if not code:
+        return "یک کشور ناشناس"
+    try:
+        row = await db.fetchrow(
+            "SELECT flag, name_fa FROM ng_countries WHERE country_code=$1",
+            (str(code),),
+        )
+        if row:
+            return f"{row.get('flag') or ''} {row.get('name_fa') or code}".strip()
+    except Exception:
+        pass
+    return str(code)
+
+
+async def _player_name(db, pid) -> str:
+    if pid is None:
+        return "یک فرمانده"
+    try:
+        row = await db.fetchrow(
+            "SELECT display_name, username FROM ng_players WHERE player_id=$1",
+            (int(pid),),
+        )
+        if row:
+            return (
+                (row.get("display_name") or row.get("username") or f"بازیکن {pid}")
+            )
+    except Exception:
+        pass
+    return f"بازیکن {pid}"
 
 
 async def _country_names(db, limit: int = 40) -> list[str]:
@@ -160,8 +182,152 @@ async def _country_names(db, limit: int = 40) -> list[str]:
     return names or ["کشور بی‌نام", "قدرت منطقه‌ای"]
 
 
-async def collect_real_headlines(db, *, lookback_hours: int = 3, limit: int = 30) -> list[str]:
-    """Pull recent real gameplay activity and turn into news lines."""
+def _extract_amount(summary: str) -> str | None:
+    m = re.search(r"([\d٬,]{3,})", summary or "")
+    if m:
+        return m.group(1).replace(",", "٬")
+    m2 = re.search(r"(\d+)\s*(بشکه|میلیون|میلیارد)?", summary or "")
+    if m2:
+        return (m2.group(0) or "").strip()
+    return None
+
+
+def _extract_prize(summary: str) -> str:
+    s = summary or ""
+    s = re.sub(r"^چرخ شانس\s*[:：\-]?\s*", "", s, flags=re.I).strip()
+    return s or "یک جایزه مرموز"
+
+
+async def narrate_event(db, row: dict) -> str | None:
+    """Turn a raw activity row into a proper Persian news sentence."""
+    kind = str(row.get("kind") or "")
+    summary = re.sub(r"\s+", " ", (row.get("summary") or "").strip())
+    if not summary or len(summary) < 4:
+        return None
+    if summary.startswith("❌") or summary.startswith("خطا"):
+        return None
+
+    country = await _country_label(db, row.get("country_code"))
+    player = await _player_name(db, row.get("player_id"))
+    amount = _extract_amount(summary)
+
+    # --- lucky spin ---
+    if kind == "lucky_spin" or "چرخ شانس" in summary:
+        prize = _extract_prize(summary)
+        templates = [
+            f"در چرخ شانس امروز، کشور {country} موفق شد «{prize}» را به‌دست آورد و خوش‌شانسی خود را به رخ جهان کشید.",
+            f"فرمانده {player} از {country} در چرخش بخت، برندهٔ «{prize}» شد؛ منابع این کشور تقویت شد.",
+            f"گزارش ویژه: {country} با برنده شدن «{prize}» در چرخ شانس، توجه ناظران بین‌المللی را جلب کرد.",
+        ]
+        return random.choice(templates)
+
+    # --- combat ---
+    if kind in ("attack", "nuke", "nuclear") or "حمله" in summary:
+        if "اتمی" in summary or "هسته‌" in summary or kind in ("nuke", "nuclear"):
+            templates = [
+                f"خبر فوری: {country} یک حمله اتمی علیه دشمن خود انجام داد و موازنه قدرت را بر هم زد.",
+                f"پس از یک درگیری هسته‌ای، {country} نام خود را در صدر اخبار جنگ ثبت کرد.",
+                f"ناظران نظامی از حمله اتمی منتسب به {country} خبر دادند؛ خسارت گسترده‌ای گزارش شده است.",
+            ]
+        elif "نابود" in summary:
+            templates = [
+                f"جهان در شوک: یک کشور در پی حملهٔ {country} از نقشه قدرت‌ها حذف شد.",
+                f"گزارش‌ها حاکی است نیروهای {country} دشمن را تا مرز نابودی کامل پیش بردند.",
+            ]
+        else:
+            templates = [
+                f"ارتش {country} عملیات نظامی تازه‌ای را آغاز کرد و جبهه‌های جنگ دوباره داغ شد.",
+                f"درگیری جدید: {country} به مواضع دشمن یورش برد؛ جزئیات خسارت در حال بررسی است.",
+                f"خبرنگاران جبهه گزارش دادند نیروهای {country} در یک حملهٔ غافلگیرانه ظاهر شدند.",
+            ]
+        return random.choice(templates)
+
+    if kind == "destroy" or "نابود" in summary:
+        templates = [
+            f"پایان یک قدرت: کشوری در اثر درگیری‌های اخیر نابود و قلمرویش آزاد اعلام شد. عامل اصلی: {country}.",
+            f"سازمان ملل تأیید کرد یک واحد سیاسی پس از حملهٔ {country} از صحنه کنار رفت.",
+        ]
+        return random.choice(templates)
+
+    # --- economy / shop ---
+    if kind in ("buy", "checkout", "shop"):
+        if amount:
+            templates = [
+                f"بازار تسلیحات تکان خورد: {country} خریدی به ارزش حدود {amount} انجام داد و انبار خود را تقویت کرد.",
+                f"گزارش اقتصادی: فرمانده {player} برای {country} معامله‌ای بزرگ به مبلغ حدود {amount} ثبت کرد.",
+            ]
+        else:
+            templates = [
+                f"{country} در فروشگاه جهانی خرید سنگینی انجام داد؛ تحلیل‌گران از آماده‌سازی نظامی سخن می‌گویند.",
+                f"تجارت جنگ‌افزار: {country} تجهیزات تازه‌ای به زرادخانه خود افزود.",
+            ]
+        return random.choice(templates)
+
+    if kind == "sell":
+        templates = [
+            f"{country} آگهی تازه‌ای در بازار آزاد ثبت کرد؛ عرضهٔ تجهیزات ممکن است قیمت‌ها را تغییر دهد.",
+            f"بازار آزاد: پیشنهاد فروش جدیدی از سوی {country} منتشر شد.",
+        ]
+        return random.choice(templates)
+
+    if kind == "oil_trade" or ("نفت" in summary and kind in ("trade", "aid_oil", "sell", "buy")):
+        templates = [
+            f"بازار انرژی: {country} در معاملات نفتی فعال ظاهر شد و بشکه‌های سیاه جابه‌جا کرد.",
+            f"گزارش نفتی — {country} نقش پررنگی در تجارت سوخت منطقه ایفا کرد.",
+        ]
+        return random.choice(templates)
+
+    # --- aid ---
+    if kind in ("aid_money", "aid_army", "aid_oil") or "کمک" in summary:
+        if kind == "aid_oil" or "نفت" in summary:
+            line = f"دیپلماسی انرژی: {country} محموله نفتی کمکی ارسال کرد و متحدان خود را تقویت نمود."
+        elif kind == "aid_army" or "نظامی" in summary:
+            line = f"کمک نظامی: {country} تجهیزات رزمی برای یک متحد ارسال کرد."
+        else:
+            line = (
+                f"کمک مالی قابل‌توجهی از سوی {country} جابه‌جا شد"
+                + (f" (حدود {amount})" if amount else "")
+                + "؛ روابط دیپلماتیک گرم‌تر شد."
+            )
+        return line
+
+    # --- claim / politics ---
+    if kind == "claim":
+        templates = [
+            f"تغییر نقشه قدرت: {country} تحت فرماندهی جدید قرار گرفت و فصل تازه‌ای آغاز شد.",
+            f"مراسم انتقال قدرت در {country} برگزار شد؛ جهان چشم به سیاست‌های تازه دوخته است.",
+        ]
+        return random.choice(templates)
+
+    if kind in ("ban", "unban"):
+        if kind == "ban" or "بن" in summary:
+            return f"اعلامیه امنیتی: یک بازیکن به‌دلیل نقض قوانین از سوی ناظران جهان مسدود شد. (مرتبط با {country})"
+        return f"رفع محدودیت: دسترسی یک فرمانده از سر گرفته شد و به عرصهٔ رقابت بازگشت."
+
+    if kind in ("alliance", "peace"):
+        templates = [
+            f"تحول دیپلماتیک: {country} در مسیر اتحاد یا صلح گام تازه‌ای برداشت.",
+            f"مذاکرات سیاسی اطراف {country} جدی‌تر شده است؛ احتمال پیمان جدید وجود دارد.",
+        ]
+        return random.choice(templates)
+
+    if kind == "statement":
+        templates = [
+            f"بیانیه رسمی از {country} منتشر شد و موجی از واکنش‌های دیپلماتیک برانگیخت.",
+            f"سخنگوی {country} مواضع تازه‌ای اعلام کرد؛ رسانه‌ها آن را تیتر کردند.",
+        ]
+        return random.choice(templates)
+
+    # generic narrative — never dump raw summary alone
+    templates = [
+        f"رویداد مهم در {country}: ناظران بین‌المللی از تحرک تازهٔ این قدرت خبر دادند.",
+        f"گزارش میدانی — {country} در ساعات اخیر در کانون توجه جهان قرار گرفت.",
+        f"خبرگزاری جهان: تحولات مربوط به {country} می‌تواند معادلات منطقه را عوض کند.",
+    ]
+    return random.choice(templates)
+
+
+async def collect_real_headlines(db, *, lookback_hours: int = 3, limit: int = 40) -> list[str]:
     since = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
     placeholders = ",".join(f"'{k}'" for k in REAL_KINDS)
     try:
@@ -183,27 +349,23 @@ async def collect_real_headlines(db, *, lookback_hours: int = 3, limit: int = 30
         rows = []
 
     out: list[str] = []
+    seen_local: set[str] = set()
     for r in rows or []:
-        kind = str(r.get("kind") or "")
-        summary = _clean_summary(r.get("summary") or "")
-        if not summary or len(summary) < 8:
+        try:
+            line = await narrate_event(db, dict(r))
+        except Exception:
+            log.exception("narrate_event")
+            line = None
+        if not line:
             continue
-        # Skip pure internal noise
-        if summary.startswith("❌") or "خطا" in summary[:12]:
+        line = line.strip()
+        if len(line) < 20:
             continue
-        if kind in ("attack", "nuke", "nuclear", "destroy"):
-            line = f"⚔️ {summary}"
-        elif kind in ("buy", "checkout", "shop", "sell"):
-            line = f"🛒 {summary}"
-        elif kind.startswith("aid"):
-            line = f"🤝 {summary}"
-        elif kind in ("claim",):
-            line = f"🏛 {summary}"
-        elif kind in ("ban", "unban"):
-            line = f"🚫 {summary}"
-        else:
-            line = f"📌 {summary}"
-        out.append(line[:320])
+        key = _fp(line)
+        if key in seen_local:
+            continue
+        seen_local.add(key)
+        out.append(line[:400])
     return out
 
 
@@ -214,23 +376,23 @@ async def roleplay_headline(db) -> str:
     if b == a and len(names) > 1:
         b = names[(names.index(a) + 1) % len(names)]
     tpl = random.choice(RP_TEMPLATES)
-    return "🎭 " + tpl.format(a=a, b=b)
+    return tpl.format(a=a, b=b)
 
 
 async def pick_unique_headline(db) -> tuple[str, str]:
-    """Return (body_without_header, source). Guarantees uniqueness vs history."""
     reals = await collect_real_headlines(db)
     random.shuffle(reals)
     for line in reals:
         if not await _seen(db, _fp(line)):
             return line, "real"
-    # roleplay attempts
     for _ in range(25):
         line = await roleplay_headline(db)
         if not await _seen(db, _fp(line)):
             return line, "roleplay"
-    # last resort: timestamped unique
-    line = f"📡 گزارش ویژه سازمان ملل در {datetime.now(TEHRAN).strftime('%H:%M')} — وضعیت جهان پایدار اما پرتنش است."
+    line = (
+        f"گزارش ویژه سازمان ملل در {datetime.now(TEHRAN).strftime('%H:%M')} — "
+        "وضعیت جهان آرام اما پر از تنش پنهان توصیف شد."
+    )
     return line, "roleplay"
 
 
@@ -271,7 +433,6 @@ async def list_player_ids(db) -> list[int]:
 
 
 async def publish_hourly_news(game) -> str | None:
-    """Build one unique news item and queue for groups + all player DMs."""
     db = game.db
     await ensure_tables(db)
     if await already_sent_this_hour(db):
@@ -281,19 +442,15 @@ async def publish_hourly_news(game) -> str | None:
     await _remember(db, body, source)
     await mark_hour_sent(db, body)
 
-    # Groups via existing group log pipeline
     try:
         await game.log_activity("group_news", text)
     except Exception:
         log.exception("queue group news")
-
-    # Also try broadcast_log path
     try:
         await game.broadcast_log("news", text)
     except Exception:
         log.exception("broadcast_log news")
 
-    # DM every player (queued; dm_notice_loop sends)
     pids = await list_player_ids(db)
     for pid in pids:
         try:
