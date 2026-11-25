@@ -2291,7 +2291,7 @@ def register_handlers(bot, app_ctx: dict):
                 text_r = await game.referral_panel_text(pid)
                 rows = [
                     [("📋 نمایش کد دعوت", "ng:refcode")],
-                    [("🎟 کد دعوت دارید؟", "ng:refenter")],
+                    [("✍️ وارد کردن کد دعوت", "ng:refenter")],
                     back_row(),
                 ]
                 await reply(message, text_r, ik(rows))
@@ -2927,7 +2927,11 @@ def register_handlers(bot, app_ctx: dict):
                     except Exception as e:
                         log.exception("referral more")
                         txt = "🎁 سیستم دعوت — " + str(e)
-                    await out(txt, ik([back_row()]))
+                    await out(txt, ik([
+                        [("📋 نمایش کد دعوت", "ng:refcode")],
+                        [("✍️ وارد کردن کد دعوت", "ng:refenter")],
+                        back_row(),
+                    ]))
                     return
                 if key == "donate":
                     nav_push(pid, "donate")
@@ -5111,6 +5115,20 @@ def register_handlers(bot, app_ctx: dict):
             if data == "ng:orefstats":
                 await out(await game.referral_stats_text())
                 return
+            
+            if data == "ng:ref" or data == "ng:ref:panel":
+                try:
+                    txt = await game.referral_panel_text(pid)
+                except Exception as e:
+                    log.exception("ref panel")
+                    txt = "🎁 سیستم دعوت"
+                await out(txt, ik([
+                    [("📋 نمایش کد دعوت", "ng:refcode")],
+                    [("✍️ وارد کردن کد دعوت", "ng:refenter")],
+                    back_row(),
+                ]))
+                return
+
             if data == "ng:refcode":
                 row = await game.ensure_referral_row(pid)
                 code = row["referral_code"]
@@ -5124,7 +5142,9 @@ def register_handlers(bot, app_ctx: dict):
             if data == "ng:refenter":
                 await _set_pending(game, pid, "ref_code")
                 await out(
-                    "لطفاً کد دعوت دوستت را وارد کن\nمثال: WW123456\n"
+                    "✍️ وارد کردن کد دعوت\n\n"
+                    "کد دعوت دوستت را همین‌جا بفرست.\n"
+                    "مثال: WW123456\n\n"
                     "اگر هنوز کشور نداری، کد ذخیره می‌شود و بعد از انتخاب کشور اعمال می‌گردد.",
                     ik([cancel_row()]),
                 )
