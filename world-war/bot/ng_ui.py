@@ -855,13 +855,13 @@ def register_handlers(bot, app_ctx: dict):
             if st:
                 kind = st.get("kind")
                 if kind == "hacker_statement":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     await reply(message, "بیانیه ویژه هکری حذف شده؛ از بیانیه عادی کشور استفاده کنید.", main_kb(owner))
                     return
                 if False and kind == "hacker_statement_disabled":
                     try:
                         msg = await game.hacker.queue_announcement(pid, text)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except (HackerError, GameError) as e:
                         await reply(message, f"❌ {e}", ik([cancel_row()]))
@@ -878,7 +878,7 @@ def register_handlers(bot, app_ctx: dict):
                         return
                     try:
                         msg = await game.add_co_owner(pid, tid)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(True))
                     except GameError as e:
                         await reply(message, f"❌ {e}", ik([cancel_row()]))
@@ -888,7 +888,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 # cancel pending if user pressed a main menu button
                 if text in MENU_TEXTS or (text.startswith("/") and kind and kind.startswith("ally")):
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     # fall through to normal menu handling below
                 elif kind == "ally_name":
                     name = text.strip()[:40]
@@ -979,7 +979,7 @@ def register_handlers(bot, app_ctx: dict):
                     )
                     return
                 elif kind == "ally_deposit":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.alliances.deposit(pid, code, parse_amount(text))
                     except (AllianceError, GameError, ValueError) as e:
@@ -987,7 +987,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "ally_withdraw":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.alliances.withdraw(pid, parse_amount(text))
                     except (AllianceError, GameError, ValueError) as e:
@@ -995,7 +995,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "ally_rename":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.alliances.rename(pid, text.strip())
                     except (AllianceError, GameError) as e:
@@ -1006,13 +1006,13 @@ def register_handlers(bot, app_ctx: dict):
                     try:
                         raw = text.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
                         msg = await game.alliances.expand_members(pid, int(raw))
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                     except (AllianceError, GameError, ValueError) as e:
                         msg = f"❌ {e}\nدوباره عدد بزرگ‌تر از ظرفیت فعلی را بفرستید."
                     await reply(message, msg, main_kb(owner) if "✅" in str(msg) else None)
                     return
                 if kind == "ally_etreasury":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.alliances.expand_treasury(pid, parse_amount(text))
                     except (AllianceError, GameError, ValueError) as e:
@@ -1026,11 +1026,12 @@ def register_handlers(bot, app_ctx: dict):
                         msg = await game.alliances.pay_member(pid, st["pay_country"], amount)
                     except (AllianceError, GameError, ValueError, KeyError) as e:
                         msg = f"❌ {e}"
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "set_shop_price":
-                    st = _pending.pop(pid, {})
+                    st = dict((await _get_pending(game, pid)) or {})
+                    await _clear_pending(game, pid)
                     try:
                         price = parse_amount(text)
                         msg = await game.set_item_unit_price(pid, st.get("item"), price)
@@ -1069,7 +1070,7 @@ def register_handlers(bot, app_ctx: dict):
 
                 if kind == "donation_set_total":
                     if not owner:
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, "❌ فقط مالک")
                         return
                     raw = (text or "").strip().replace(",", "").replace(" ", "")
@@ -1077,20 +1078,20 @@ def register_handlers(bot, app_ctx: dict):
                     try:
                         amount = float(raw)
                         msg = await game.donations.set_total_manual(pid, amount)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(True))
                     except Exception as e:
                         await reply(message, f"❌ {e}")
                     return
                 if kind and str(kind).startswith("donation_set_"):
                     if not owner:
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, "❌ فقط مالک")
                         return
                     field = str(kind).replace("donation_set_", "")
                     try:
                         msg = await game.donations.set_field(pid, field, text)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(True))
                     except Exception as e:
                         await reply(message, f"❌ {e}")
@@ -1102,7 +1103,8 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, "متن کامل قانون را بنویسید (حداقل ۲۰ کاراکتر):", ik([cancel_row()]))
                     return
                 if kind == "law_body":
-                    st = _pending.pop(pid, {})
+                    st = dict((await _get_pending(game, pid)) or {})
+                    await _clear_pending(game, pid)
                     if not code:
                         await reply(message, "کشور ندارید", main_kb(owner))
                         return
@@ -1113,7 +1115,8 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "law_bonus":
-                    st = _pending.pop(pid, {})
+                    st = dict((await _get_pending(game, pid)) or {})
+                    await _clear_pending(game, pid)
                     try:
                         bonus = parse_amount(text or "0")
                     except Exception:
@@ -1126,7 +1129,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 if kind == "ref_code":
                     preset = st.get("preset")
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     code_in = (text or "").strip() or str(preset or "")
                     try:
                         msg = await game.apply_referral_code(pid, code_in)
@@ -1138,7 +1141,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "statement":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     if not code:
                         await reply(message, "هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.", main_kb(owner))
                         return
@@ -1165,7 +1168,7 @@ def register_handlers(bot, app_ctx: dict):
                         await reply(message, "❌ خطا در کمک نفتی.", ik([cancel_row()]))
                     return
                 if kind == "aid_money_amount":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         amount = parse_amount(text)
                         if amount <= 0:
@@ -1179,7 +1182,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "aid_army_qty":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         qty = parse_amount(text)
                         msg = await game.aid_army(code, st["dst"], st["item"], qty, pid)
@@ -1249,20 +1252,39 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 if kind == "mkt_qty":
                     try:
-                        st["qty"] = parse_amount(text)
-                        st["kind"] = "mkt_price"
-                        await reply(message, "قیمت واحد پیشنهادی را بنویسید:")
+                        qty = parse_amount(text)
+                        if qty <= 0:
+                            raise ValueError("عدد نامعتبر")
+                        item = st.get("item")
+                        await _set_pending(game, pid, "mkt_price", item=item, qty=qty)
+                        await reply(
+                            message,
+                            "قیمت واحد پیشنهادی را بنویسید:",
+                            ik([cancel_row()]),
+                        )
                     except ValueError:
-                        await reply(message, "یک عدد معتبر بنویسید.")
+                        await reply(message, "یک عدد معتبر بنویسید.", ik([cancel_row()]))
                     return
                 if kind == "mkt_price":
-                    _pending.pop(pid, None)
                     try:
                         price = parse_amount(text)
-                        msg = await game.market_create(code, st["item"], st["qty"], price, pid)
-                    except (ValueError, GameError) as e:
-                        msg = f"❌ {e}"
-                    await reply(message, msg, main_kb(owner))
+                        if price < 0:
+                            raise ValueError("عدد نامعتبر")
+                        item = st.get("item")
+                        qty = st.get("qty")
+                        msg = await game.market_create(code, item, qty, price, pid)
+                        await _clear_pending(game, pid)
+                        await reply(message, msg, main_kb(owner))
+                    except ValueError:
+                        # keep waiting for a valid price
+                        await reply(message, "یک عدد معتبر بنویسید.", ik([cancel_row()]))
+                    except GameError as e:
+                        await _clear_pending(game, pid)
+                        await reply(message, f"❌ {e}", main_kb(owner))
+                    except Exception:
+                        log.exception("mkt_price")
+                        await _clear_pending(game, pid)
+                        await reply(message, "❌ خطا در ثبت آگهی.", main_kb(owner))
                     return
                 # ── Ban wizard (from player profile) ─────────────────
                 if kind == "ban_search_code":
@@ -1378,10 +1400,10 @@ def register_handlers(bot, app_ctx: dict):
                             unban_package=bool(st.get("unban_package")),
                         )
                     except GameError as e:
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, f"❌ {e}", main_kb(owner))
                         return
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     await reply(message, receipt, main_kb(owner))
                     # Notify banned user if possible
                     try:
@@ -1399,7 +1421,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
 
                 if kind == "ticket_new_body":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         tid, msg = await game.create_ticket(pid, text)
                         await reply(
@@ -1428,7 +1450,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "ticket_reply_body":
                     tid = int(st.get("ticket_id") or 0)
                     is_admin = bool(st.get("is_admin"))
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.reply_ticket(tid, pid, text, is_admin=is_admin)
                         await reply(message, msg)
@@ -1470,7 +1492,7 @@ def register_handlers(bot, app_ctx: dict):
                     )
                     return
                 if kind == "unban_user":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.unban_user(pid, text)
                     except GameError as e:
@@ -1479,12 +1501,12 @@ def register_handlers(bot, app_ctx: dict):
                     return
                 if kind == "set_log_group":
                     if not owner:
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, "❌ فقط مالک")
                         return
                     try:
                         msg = await game.set_log_group(pid, text)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except GameError as e:
                         await reply(message, f"❌ {e}", ik([cancel_row()]))
@@ -1527,7 +1549,7 @@ def register_handlers(bot, app_ctx: dict):
                     try:
                         amount = game.parse_money_amount(text)
                         msg = await game.admin_adjust_hp_all(pid, amount)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except GameError as e:
                         await reply(message, f"❌ {e}")
@@ -1545,7 +1567,7 @@ def register_handlers(bot, app_ctx: dict):
                         msg = await game.alliance_groups.register(
                             pid, cid.strip(), rname.strip(), bot=bot
                         )
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except Exception as e:
                         await reply(message, f"❌ {e}")
@@ -1554,7 +1576,7 @@ def register_handlers(bot, app_ctx: dict):
                     try:
                         amount = game.parse_money_amount(text)
                         msg = await game.admin_give_all_players(pid, amount)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except GameError as e:
                         await reply(message, f"❌ {e}")
@@ -1571,7 +1593,7 @@ def register_handlers(bot, app_ctx: dict):
                         ccode = parts[0].upper()
                         amount = game.parse_money_amount(parts[1])
                         msg = await game.admin_money(pid, ccode, amount)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                     except GameError as e:
                         msg = f"❌ {e}"
                     except Exception as e:
@@ -1582,7 +1604,7 @@ def register_handlers(bot, app_ctx: dict):
                         await reply(message, "دوباره مبلغ را بفرستید یا لغو کنید.", ik([cancel_row()]))
                     return
                 if kind == "reset_phrase":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.full_reset(pid, text)
                     except GameError as e:
@@ -1591,7 +1613,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
 
                 if kind == "global_tax_amount":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         amount = parse_amount(text)
                         result = await game.global_tax(pid, amount)
@@ -1610,11 +1632,11 @@ def register_handlers(bot, app_ctx: dict):
                     try:
                         tid = int(st.get("target") or 0)
                         if not tid:
-                            _pending.pop(pid, None)
+                            await _clear_pending(game, pid)
                             await reply(message, "❌ شناسه بازیکن نامعتبر", main_kb(owner))
                             return
                         msg = await game.admin_grant_equipment_text(pid, tid, text)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(
                             message,
                             msg,
@@ -1631,11 +1653,11 @@ def register_handlers(bot, app_ctx: dict):
                         amount = game.parse_money_amount(text)
                         tid = int(st.get("tid") or 0)
                         if not tid:
-                            _pending.pop(pid, None)
+                            await _clear_pending(game, pid)
                             await reply(message, "❌ شناسه بازیکن نامعتبر", main_kb(owner))
                             return
                         msg = await game.admin_give_to_player(pid, tid, amount)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except GameError as e:
                         await reply(message, f"❌ {e}\nدوباره مبلغ را بفرستید یا لغو کنید.", ik([cancel_row()]))
@@ -1648,11 +1670,11 @@ def register_handlers(bot, app_ctx: dict):
                         amount = game.parse_money_amount(text)
                         tid = int(st.get("tid") or 0)
                         if not tid:
-                            _pending.pop(pid, None)
+                            await _clear_pending(game, pid)
                             await reply(message, "❌ شناسه بازیکن نامعتبر", main_kb(owner))
                             return
                         msg = await game.admin_take_from_player(pid, tid, amount)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except GameError as e:
                         await reply(message, f"❌ {e}\nدوباره مبلغ را بفرستید.", ik([cancel_row()]))
@@ -1661,7 +1683,7 @@ def register_handlers(bot, app_ctx: dict):
                         await reply(message, "❌ خطا در برداشت پول.", ik([cancel_row()]))
                     return
                 if kind == "user_tax":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         amount = parse_amount(text)
                         msg = await game.admin_tax_user(pid, st["code"], amount)
@@ -1670,7 +1692,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "condemn_speech":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.condemn_country(pid, st["code"], text)
                     except GameError as e:
@@ -1679,7 +1701,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
 
                 if kind == "edit_start":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.set_setting(pid, "start_message", text)
                     except GameError as e:
@@ -1687,7 +1709,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg, main_kb(owner))
                     return
                 if kind == "edit_about":
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     try:
                         msg = await game.set_setting(pid, "about_message", text)
                     except GameError as e:
@@ -1702,7 +1724,7 @@ def register_handlers(bot, app_ctx: dict):
                             await reply(message, "❌ مبلغ باید بزرگ‌تر از صفر باشد.", ik([cancel_row()]))
                             return
                         msg = await game.legendary.admin_charge_wallet(pid, tid, amount)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except GameError as e:
                         await reply(message, f"❌ {e}", ik([cancel_row()]))
@@ -1715,7 +1737,7 @@ def register_handlers(bot, app_ctx: dict):
                         price = game.parse_money_amount(text)
                         ic = st.get("item")
                         msg = await game.legendary.set_price(pid, ic, price)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except GameError as e:
                         await reply(message, f"❌ {e}", ik([cancel_row()]))
@@ -1729,7 +1751,7 @@ def register_handlers(bot, app_ctx: dict):
                         uses = int(float(raw.replace(",", "").replace("،", "").replace(" ", "")))
                         ic = st.get("item")
                         msg = await game.legendary.set_uses(pid, ic, uses)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, main_kb(owner))
                     except GameError as e:
                         await reply(message, f"❌ {e}", ik([cancel_row()]))
@@ -1740,7 +1762,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "owner_player_search":
                     try:
                         hits = await game.search_players(text, limit=30)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         if not hits:
                             await reply(
                                 message,
@@ -1776,7 +1798,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "hacker_admin_level":
                     try:
                         msg = await game.hacker.admin_set_level(pid, int(text.strip()))
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, ik([[("🎭 پنل هکر", "ng:ohack")]]))
                     except Exception as e:
                         await reply(message, f"❌ {e}")
@@ -1784,7 +1806,7 @@ def register_handlers(bot, app_ctx: dict):
                 if kind == "hacker_admin_xp":
                     try:
                         msg = await game.hacker.admin_set_xp(pid, int(text.strip().replace(",", "")))
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, ik([[("🎭 پنل هکر", "ng:ohack")]]))
                     except Exception as e:
                         await reply(message, f"❌ {e}")
@@ -1793,7 +1815,7 @@ def register_handlers(bot, app_ctx: dict):
                     try:
                         amt = parse_amount(text)
                         msg = await game.hacker.admin_set_treasury(pid, amt)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(message, msg, ik([[("🎭 پنل هکر", "ng:ohack")]]))
                     except Exception as e:
                         await reply(message, f"❌ {e}")
@@ -1807,7 +1829,7 @@ def register_handlers(bot, app_ctx: dict):
                         raw = raw.replace(",", "").replace("،", "").replace(" ", "")
                         tid = int(st.get("target"))
                         msg = await game.admin_set_hp(pid, tid, raw)
-                        _pending.pop(pid, None)
+                        await _clear_pending(game, pid)
                         await reply(
                             message,
                             msg,
@@ -1833,7 +1855,7 @@ def register_handlers(bot, app_ctx: dict):
                     return
 
                 # Unknown pending step — do not swallow input silently
-                _pending.pop(pid, None)
+                await _clear_pending(game, pid)
                 await reply(
                     message,
                     "❌ این مرحله ورودی منقضی یا نامعتبر بود. دوباره از منو اقدام کنید.",
@@ -2780,7 +2802,7 @@ def register_handlers(bot, app_ctx: dict):
 
             if data == "ng:back":
                 prev = nav_back(pid)
-                _pending.pop(pid, None)
+                await _clear_pending(game, pid)
                 if not prev:
                     nav_home(pid)
                     await out("🏠 منوی اصلی", main_kb(owner))
@@ -2857,7 +2879,7 @@ def register_handlers(bot, app_ctx: dict):
                 return
             if data == "ng:acreateyes":
                 if not code:
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     await out("هنوز کشوری نداری — از «🗺 انتخاب کشور» شروع کن.", main_kb(owner))
                     return
                 # Double-tap / late callback after success: already in alliance
@@ -2866,7 +2888,7 @@ def register_handlers(bot, app_ctx: dict):
                 except Exception:
                     mem_now = None
                 if mem_now:
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     a = await game.alliances.get(mem_now["alliance_id"])
                     link = ((a or {}).get("group_invite_link") or "").strip()
                     msg = "✅ اتحاد شما فعال است."
@@ -2908,7 +2930,7 @@ def register_handlers(bot, app_ctx: dict):
                     st["kind"] = "ally_confirm"
                     _pending[pid] = dict(st)
                     msg = await game.alliances.create(pid, code, name, mm, tc, bot=bot)
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     await out(msg, main_kb(owner), force_new=True)
                 except (AllianceError, GameError) as e:
                     st["kind"] = "ally_confirm"
@@ -3192,7 +3214,7 @@ def register_handlers(bot, app_ctx: dict):
                         if preset:
                             try:
                                 ref_msg = await game.apply_referral_code(pid, str(preset))
-                                _pending.pop(pid, None)
+                                await _clear_pending(game, pid)
                                 try:
                                     await game.db.execute(
                                         "DELETE FROM ng_pending_referral WHERE player_id=$1",
@@ -4259,7 +4281,7 @@ def register_handlers(bot, app_ctx: dict):
                 )
                 return
             if data == "ng:donate:no":
-                _pending.pop(pid, None)
+                await _clear_pending(game, pid)
                 await out("لغو شد. حمایت کاملاً اختیاری است.", main_kb(owner))
                 return
             if data == "ng:donate:yes":
@@ -4329,7 +4351,7 @@ def register_handlers(bot, app_ctx: dict):
                 st = _pending.get(pid) or {}
                 if st.get("kind") not in ("donation_show_name", "donation_amount") or not st.get("amount"):
                     await out("نشست منقضی شده. دوباره از حمایت مالی شروع کن.", main_kb(owner))
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     return
                 amount = float(st["amount"])
                 method = st.get("method") or "card"
@@ -4349,7 +4371,7 @@ def register_handlers(bot, app_ctx: dict):
                         show_name=show,
                         method=method,
                     )
-                    _pending.pop(pid, None)
+                    await _clear_pending(game, pid)
                     await out(
                         f"✅ درخواست حمایت ثبت شد.\nشناسه: #{drow['id']}\nمبلغ: {int(amount):,} تومان\n"
                         "پس از بررسی مالک نتیجه اعلام می‌شود.",
