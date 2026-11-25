@@ -2343,6 +2343,98 @@ def register_handlers(bot, app_ctx: dict):
             pid = _uid(cq)
             if not pid or not data:
                 return
+            # --- Lucky spin: handle early (no 30s menu lock / guaranteed UI update) ---
+            if data in ("ng:spin", "ng:spin:panel", "ng:spin:go"):
+                msg0 = getattr(cq, "message", None)
+                owner0 = False
+                try:
+                    await ensure(pid)
+                    owner0 = game.is_owner(pid)
+                except Exception:
+                    pass
+
+                async def _spin_out(text, kb=None):
+                    body = str(text)[:3500]
+                    comp = kb if kb is not None else None
+                    # Prefer edit current message so user always sees change
+                    if msg0 is not None:
+                        for attr in ("edit_text", "edit", "edit_message_text"):
+                            fn = getattr(msg0, attr, None)
+                            if not callable(fn):
+                                continue
+                            try:
+                                if comp is not None:
+                                    try:
+                                        await fn(body, components=comp)
+                                        return
+                                    except TypeError:
+                                        pass
+                                await fn(body)
+                                return
+                            except Exception:
+                                log.debug("spin edit failed %s", attr, exc_info=True)
+                        try:
+                            await msg0.reply(body, components=comp)
+                            return
+                        except Exception:
+                            log.exception("spin reply failed")
+                    try:
+                        await reply(msg0, body, comp) if msg0 is not None else None
+                    except Exception:
+                        log.exception("spin reply2 failed")
+
+                try:
+                    if data in ("ng:spin", "ng:spin:panel"):
+                        try:
+                            txt = await game.lucky_spin_panel(pid)
+                        except Exception:
+                            log.exception("spin panel early")
+                            txt = "🎰 چرخ شانس"
+                        rows = [
+                            [("🎲 چرخاندن چرخ", "ng:spin:go")],
+                            back_row(),
+                        ]
+                        try:
+                            if hasattr(cq, "answer"):
+                                await cq.answer(text="چرخ شانس", show_alert=False)
+                        except Exception:
+                            pass
+                        await _spin_out(txt, ik(rows))
+                        return
+
+                    # data == ng:spin:go
+                    try:
+                        win_msg = await game.lucky_spin(pid)
+                        ok = True
+                    except GameError as e:
+                        win_msg = f"❌ {e}"
+                        ok = False
+                    except Exception as e:
+                        log.exception("spin go early")
+                        win_msg = f"❌ خطا در چرخ شانس: {e}"
+                        ok = False
+                    # Toast / alert so user always sees feedback
+                    try:
+                        short = (win_msg or "")[:180].replace("\n", " ")
+                        if hasattr(cq, "answer"):
+                            await cq.answer(text=short or ("✅ انجام شد" if ok else "خطا"), show_alert=True)
+                    except Exception:
+                        pass
+                    rows = [
+                        [("🎲 دوباره بچرخان", "ng:spin:go"), ("🎰 وضعیت", "ng:spin")],
+                        back_row(),
+                    ]
+                    await _spin_out(win_msg, ik(rows))
+                    return
+                except Exception:
+                    log.exception("early spin handler")
+                    try:
+                        if hasattr(cq, "answer"):
+                            await cq.answer(text="خطا در چرخ شانس", show_alert=True)
+                    except Exception:
+                        pass
+                    return
+
             try:
                 if hasattr(cq, "answer"):
                     await cq.answer(text="⏳", show_alert=False)
@@ -2354,7 +2446,7 @@ def register_handlers(bot, app_ctx: dict):
                 mid_to = None
                 if msg_to is not None:
                     mid_to = getattr(msg_to, "message_id", None) or getattr(msg_to, "id", None)
-                if data.startswith("ng:") and mid_to is not None:
+                if data.startswith("ng:") and mid_to is not None and not data.startswith("ng:spin"):
                     key = (int(pid), int(mid_to))
                     if not MENU_SESSIONS.owned_by(pid, mid_to):
                         try:
