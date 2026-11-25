@@ -3597,15 +3597,21 @@ def register_handlers(bot, app_ctx: dict):
             if data == "ng:spin:go":
                 try:
                     msg = await game.lucky_spin(pid)
-                    await out(msg, ik([
-                        [("🎰 وضعیت چرخ", "ng:spin")],
-                        back_row(),
-                    ]), force_new=True)
                 except GameError as e:
-                    await out(f"❌ {e}", ik([[("🎰 بازگشت", "ng:spin")], back_row()]))
+                    await out(f"❌ {e}", ik([[("🎰 بازگشت", "ng:spin")], back_row()]), force_new=True)
+                    return
                 except Exception:
                     log.exception("spin go")
-                    await out("❌ خطا در چرخ شانس.", ik([[("🎰 بازگشت", "ng:spin")]]))
+                    await out("❌ خطا در چرخ شانس.", ik([[("🎰 بازگشت", "ng:spin")]]), force_new=True)
+                    return
+                await out(
+                    msg,
+                    ik([
+                        [("🎲 دوباره بچرخان", "ng:spin:go"), ("🎰 وضعیت", "ng:spin")],
+                        back_row(),
+                    ]),
+                    force_new=True,
+                )
                 return
 
             if data == "ng:mnew":

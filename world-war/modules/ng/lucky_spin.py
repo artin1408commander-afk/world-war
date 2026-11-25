@@ -41,13 +41,13 @@ def _parse_ts(raw: str | None) -> datetime | None:
         return None
 
 
-async def status(db, pid: int) -> dict:
+async def status(db, pid: int, bypass_cooldown: bool = False) -> dict:
     await ensure_tables(db)
     row = await db.fetchrow("SELECT * FROM ng_lucky_spin WHERE player_id=$1", (int(pid),))
     now = datetime.now(timezone.utc)
     last = _parse_ts((row or {}).get("last_spin_at") if row else None)
     ready, wait_sec = True, 0
-    if last:
+    if last and not bypass_cooldown:
         nxt = last + COOLDOWN
         if now < nxt:
             ready = False

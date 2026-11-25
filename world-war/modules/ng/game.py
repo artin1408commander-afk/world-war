@@ -8868,77 +8868,116 @@ class Game:
     async def lucky_spin_panel(self, pid: int) -> str:
         from modules.ng.lucky_spin import status, panel_text, ensure_tables
         await ensure_tables(self.db)
-        st = await status(self.db, pid)
+        st = await status(self.db, int(pid), bypass_cooldown=self.is_owner(int(pid)))
         return panel_text(st)
 
     async def lucky_spin(self, pid: int) -> str:
-        """Spin wheel; grant prize to player's country. One per 6h."""
+        """Spin wheel; grant prize to player's country. One per 6h (owners unlimited)."""
         from modules.ng.lucky_spin import status, pick_prize, mark_spin, format_wait, ensure_tables
-        from modules.ng.oil_resource import add_stock
+        from modules.ng.oil_resource import add_stock, get_stock
         await ensure_tables(self.db)
         pid = int(pid)
-        st = await status(self.db, pid)
+        is_owner = bool(self.is_owner(pid))
+        st = await status(self.db, pid, bypass_cooldown=is_owner)
         if not st.get("ready"):
-            raise GameError(f"هنوز زود است. {format_wait(int(st.get('wait_sec') or 0))} صبر کنید.")
+            raise GameError(
+                f"هنوز زود است. {format_wait(int(st.get('wait_sec') or 0))} صبر کنید."
+            )
         code = await self.player_country(pid)
         if not code:
             raise GameError("ابتدا کشور انتخاب کنید، بعد چرخ شانس را بچرخانید.")
+        # ownership check
+        own = await self.db.fetchrow(
+            "SELECT owner_player_id, treasury FROM ng_countries WHERE country_code=$1",
+            (code,),
+        )
+        if not own or int(own.get("owner_player_id") or 0) != pid:
+            raise GameError("مالکیت کشور معتبر نیست.")
+
         prize_id, label, kind, payload = pick_prize()
-        if kind == "money":
-            amount = float(payload)
-            async with self.db.transaction() as tx:
-                c = await tx.fetchrow(
-                    "SELECT treasury FROM ng_countries WHERE country_code=$1 AND owner_player_id=$2",
-                    (code, pid),
-                )
-                if not c:
-                    raise GameError("مالکیت کشور معتبر نیست.")
-                await tx.execute(
-                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
-                    (float(c["treasury"] or 0) + amount, code),
-                )
-            try:
-                await self.sync_cash_from_country(code)
-            except Exception:
-                log.exception("spin cash sync")
-        elif kind == "oil":
-            await add_stock(self.db, code, float(payload))
-        elif kind == "item":
-            item_code, qty = payload
-            qty = float(int(qty))
-            meta = self._cat.get(item_code) or {}
-            inv = await self.db.fetchrow(
-                "SELECT quantity FROM ng_inventory WHERE country_code=$1 AND item_code=$2",
-                (code, item_code),
-            )
-            if inv:
+        granted_detail = label
+
+        try:
+            if kind == "money":
+                amount = float(int(payload))
+                new_t = float(own.get("treasury") or 0) + amount
                 await self.db.execute(
-                    "UPDATE ng_inventory SET quantity=$1 WHERE country_code=$2 AND item_code=$3",
-                    (float(inv["quantity"]) + qty, code, item_code),
+                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2 AND owner_player_id=$3",
+                    (new_t, code, pid),
                 )
+                try:
+                    await self.sync_cash_from_country(code)
+                except Exception:
+                    log.exception("spin cash sync")
+                granted_detail = f"{int(amount):,} پول"
+
+            elif kind == "oil":
+                barrels = float(int(payload))
+                before = await get_stock(self.db, code)
+                after = await add_stock(self.db, code, barrels)
+                if after + 1e-6 < before + barrels:
+                    raise GameError("واریز نفت ناموفق بود")
+                granted_detail = f"{int(barrels)} بشکه نفت"
+
+            elif kind == "item":
+                item_code, qty = payload
+                item_code = str(item_code)
+                qty = int(qty)
+                if qty <= 0:
+                    raise GameError("مقدار جایزه نامعتبر")
+                meta = (self._cat.get(item_code) if getattr(self, "_cat", None) else None) or {}
+                name_fa = meta.get("name_fa") or item_code
+                # use shared inventory helper (same as shop/aid)
+                await self.add_inventory(code, item_code, float(qty))
+                if int(meta.get("is_building") or 0):
+                    from datetime import datetime, timezone
+                    now = datetime.now(timezone.utc).isoformat()
+                    for _ in range(qty):
+                        nid = await self.db.fetchrow(
+                            "SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_buildings"
+                        )
+                        await self.db.execute(
+                            "INSERT INTO ng_buildings (id, country_code, building_code, level, built_at, active) "
+                            "VALUES ($1,$2,$3,1,$4,1)",
+                            (int(nid["id"]), code, item_code, now),
+                        )
+                    try:
+                        await self.recalc_income(code)
+                    except Exception:
+                        log.exception("spin recalc")
+                # verify inventory row exists with positive qty
+                inv = await self.db.fetchrow(
+                    "SELECT quantity FROM ng_inventory WHERE country_code=$1 AND item_code=$2",
+                    (code, item_code),
+                )
+                if not inv or float(inv.get("quantity") or 0) <= 0:
+                    raise GameError(f"واریز آیتم {name_fa} به انبار ناموفق بود")
+                granted_detail = f"{qty} × {name_fa}"
             else:
-                await self.db.execute(
-                    "INSERT INTO ng_inventory (country_code, item_code, quantity) VALUES ($1,$2,$3)",
-                    (code, item_code, qty),
-                )
-            if int(meta.get("is_building") or 0):
-                from datetime import datetime, timezone
-                now = datetime.now(timezone.utc).isoformat()
-                for _ in range(int(qty)):
-                    nid = await self.db.fetchrow("SELECT COALESCE(MAX(id),0)+1 AS id FROM ng_buildings")
-                    await self.db.execute(
-                        "INSERT INTO ng_buildings (id, country_code, building_code, level, built_at, active) VALUES ($1,$2,$3,1,$4,1)",
-                        (int(nid["id"]), code, item_code, now),
-                    )
-            try:
-                await self.recalc_income(code)
-            except Exception:
-                log.exception("spin recalc")
-        else:
-            raise GameError("جایزه نامعتبر")
-        await mark_spin(self.db, pid, label)
-        await self.log_activity("lucky_spin", f"چرخ شانس: {label}", code, pid)
-        return f"🎉 چرخ شانس چرخید!\n\n🏆 جایزه شما: {label}\n✅ به دارایی کشورتان اضافه شد."
+                raise GameError("جایزه نامعتبر")
+        except GameError:
+            raise
+        except Exception as e:
+            log.exception("lucky_spin grant failed prize=%s pid=%s", prize_id, pid)
+            raise GameError(f"خطا در واریز جایزه: {e}")
+
+        # only mark cooldown after successful grant
+        try:
+            await mark_spin(self.db, pid, label)
+        except Exception:
+            log.exception("mark_spin")
+        try:
+            await self.log_activity("lucky_spin", f"چرخ شانس: {label}", code, pid)
+        except Exception:
+            log.exception("spin log")
+
+        return (
+            "🎉 خوش‌شانس بودی!\n"
+            "━━━━━━━━━━━━\n"
+            f"✅ برنده شدی: {granted_detail}\n"
+            f"🏷 {label}\n"
+            "📦 جایزه به دارایی/انبار کشورت اضافه شد."
+        )
 
     def _make_ref_code(self, pid: int) -> str:
         return f"WW{int(pid)}"
