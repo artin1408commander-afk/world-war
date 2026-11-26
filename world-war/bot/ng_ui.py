@@ -1849,7 +1849,7 @@ def register_handlers(bot, app_ctx: dict):
                     await reply(message, msg)
                     return
 
-if kind == "owner_set_hp":
+                if kind == "owner_set_hp":
                     try:
                         raw = text.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
                         for ch in ("‎", "‏", "​", "‌", "‍", "﻿", " "):
