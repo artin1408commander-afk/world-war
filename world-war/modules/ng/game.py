@@ -1047,20 +1047,36 @@ class Game:
         )
         income = 0.0
         expense = 0.0
-        # Oil barrels must never grant daily income — only refineries (and other non-oil stock items)
-        NO_INCOME_ITEMS = {"res_oil", "oil", "oil_barrel", "res_oil_barrel"}
+        # Oil barrels: small stepped income — every 20 barrels => +10,000,000 / day
+        # (not per-barrel catalog income)
+        OIL_INCOME_ITEMS = {"res_oil", "oil", "oil_barrel", "res_oil_barrel"}
+        OIL_STEP = 20
+        OIL_STEP_INCOME = 10_000_000.0
+        oil_barrels = 0.0
         for r in inv:
             item_code = str(r.get("item_code") or "")
             meta = self._cat.get(item_code)
             if not meta:
                 continue
             q = float(r["quantity"] or 0)
-            if item_code in NO_INCOME_ITEMS:
+            if item_code in OIL_INCOME_ITEMS:
+                oil_barrels += q
                 di = 0.0
             else:
                 di = float(meta.get("daily_income") or 0)
             income += di * q
             expense += float(meta.get("maintenance") or 0) * q
+        # Prefer dedicated oil stock if higher (kept in sync with inventory)
+        try:
+            from modules.ng.oil_resource import get_stock
+            stock = float(await get_stock(self.db, code) or 0)
+            if stock > oil_barrels:
+                oil_barrels = stock
+        except Exception:
+            log.exception("recalc oil stock")
+        steps = int(oil_barrels) // OIL_STEP
+        if steps > 0:
+            income += float(steps) * OIL_STEP_INCOME
         await self.db.execute(
             "UPDATE ng_countries SET daily_income=$1, daily_expense=$2 WHERE country_code=$3",
             (income, expense, code),
