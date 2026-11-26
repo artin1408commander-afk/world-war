@@ -830,6 +830,7 @@ def register_handlers(bot, app_ctx: dict):
                 rows += [
                     [("👤 بازیکنان", "ng:o:hub:players"), ("🗺 کشورها", "ng:o:hub:countries")],
                     [("🛡 Sethp ۱۰۰۰/۱۰۰۰", "ng:ohpfull")],
+                    [("☠️ هاردکور", "ng:ohardcore:status"), ("💸 کسر همگانی", "ng:omassdeduct")],
                     [("💰 اقتصاد", "ng:o:hub:economy"), ("📦 تجهیزات", "ng:o:hub:inventory")],
                     [("🕊 دیپلماسی", "ng:o:hub:diplo"), ("⚔️ جنگ", "ng:o:hub:wars")],
                     [("⚙️ تنظیمات", "ng:o:hub:settings"), ("📋 گزارش‌ها", "ng:o:hub:logs")],
@@ -1822,7 +1823,33 @@ def register_handlers(bot, app_ctx: dict):
                         await reply(message, f"❌ {e}")
                     return
 
-                if kind == "owner_set_hp":
+                
+                if kind == "owner_mass_deduct":
+                    if not game.is_owner(pid):
+                        await reply(message, "❌ فقط مالک")
+                        await _clear_pending(game, pid)
+                        return
+                    raw = (text or "").replace(",", "").replace("٬", "").replace(" ", "").strip()
+                    try:
+                        amount = float(raw)
+                    except Exception:
+                        await reply(message, "❌ یک عدد معتبر بنویسید. مثال: 50000000")
+                        return
+                    if amount <= 0:
+                        await reply(message, "❌ مبلغ باید بزرگ‌تر از صفر باشد.")
+                        return
+                    try:
+                        msg = await game.admin_mass_deduct_treasury(pid, amount)
+                    except GameError as e:
+                        msg = f"❌ {e}"
+                    except Exception as e:
+                        log.exception("mass deduct")
+                        msg = f"❌ {e}"
+                    await _clear_pending(game, pid)
+                    await reply(message, msg)
+                    return
+
+if kind == "owner_set_hp":
                     try:
                         raw = text.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
                         for ch in ("‎", "‏", "​", "‌", "‍", "﻿", " "):

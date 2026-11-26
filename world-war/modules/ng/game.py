@@ -1047,12 +1047,19 @@ class Game:
         )
         income = 0.0
         expense = 0.0
+        # Oil barrels must never grant daily income — only refineries (and other non-oil stock items)
+        NO_INCOME_ITEMS = {"res_oil", "oil", "oil_barrel", "res_oil_barrel"}
         for r in inv:
-            meta = self._cat.get(r["item_code"])
+            item_code = str(r.get("item_code") or "")
+            meta = self._cat.get(item_code)
             if not meta:
                 continue
-            q = float(r["quantity"])
-            income += float(meta.get("daily_income") or 0) * q
+            q = float(r["quantity"] or 0)
+            if item_code in NO_INCOME_ITEMS:
+                di = 0.0
+            else:
+                di = float(meta.get("daily_income") or 0)
+            income += di * q
             expense += float(meta.get("maintenance") or 0) * q
         await self.db.execute(
             "UPDATE ng_countries SET daily_income=$1, daily_expense=$2 WHERE country_code=$3",
@@ -1965,6 +1972,50 @@ class Game:
                 + "کشور شما نابود شده و تا وقتی مالک هاردکور را خاموش نکند نمی‌توانید کشور جدید بگیرید."
             )
 
+
+
+    async def admin_mass_deduct_treasury(self, actor: int, amount: float) -> str:
+        """Deduct amount from every owned country treasury; floor at 0."""
+        if not self.is_owner(int(actor)):
+            raise GameError("فقط مالک")
+        amount = float(amount)
+        if amount <= 0:
+            raise GameError("مبلغ باید بزرگ‌تر از صفر باشد.")
+        rows = await self.db.fetch(
+            """
+            SELECT country_code, name_fa, treasury, owner_player_id
+            FROM ng_countries
+            WHERE owner_player_id IS NOT NULL AND COALESCE(is_destroyed,0)=0
+            """
+        )
+        ok = 0
+        zeroed = 0
+        for r in rows or []:
+            try:
+                code = r["country_code"]
+                tre = float(r.get("treasury") or 0)
+                new_t = tre - amount
+                if new_t < 0:
+                    new_t = 0.0
+                    zeroed += 1
+                await self.db.execute(
+                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
+                    (new_t, code),
+                )
+                try:
+                    await self.sync_cash_from_country(code)
+                except Exception:
+                    pass
+                ok += 1
+            except Exception:
+                log.exception("mass deduct %s", r.get("country_code"))
+        await self.admin_log(int(actor), "mass_deduct", f"amount={amount} ok={ok} zeroed={zeroed}")
+        return (
+            f"✅ کسر همگانی انجام شد.\n"
+            f"مبلغ از هر کشور: {int(amount):,}\n"
+            f"کشورهای پردازش‌شده: {ok}\n"
+            f"به صفر رسیدند: {zeroed}"
+        )
 
     async def admin_set_all_hp_full(self, actor: int) -> str:
         """Set every living (non-destroyed) country to exactly 1000/1000 HP."""
