@@ -1839,7 +1839,7 @@ def register_handlers(bot, app_ctx: dict):
                         await reply(message, "❌ مبلغ باید بزرگ‌تر از صفر باشد.")
                         return
                     try:
-                        msg = await game.admin_mass_deduct_treasury(pid, amount)
+                        msg = await game.admin_mass_deduct_daily_income(pid, amount)
                     except GameError as e:
                         msg = f"❌ {e}"
                     except Exception as e:
@@ -2534,38 +2534,6 @@ def register_handlers(bot, app_ctx: dict):
             except Exception:
                 pass
 
-            if data == "ng:omassdeduct":
-                if not game.is_owner(pid):
-                    await out("❌ فقط مالک", force_new=True)
-                    return
-                try:
-                    lows = await game.lowest_active_incomes(limit=3, days=3)
-                except Exception:
-                    log.exception("lowest incomes")
-                    lows = []
-                lines = [
-                    "💸 کسر همگانی از خزانه همه کشورها",
-                    "━━━━━━━━━━━━",
-                    "📊 کم‌درآمدترین کشورهای فعال (۳ روز اخیر):",
-                ]
-                if not lows:
-                    lines.append("هنوز کشور فعالی با دادهٔ قابل‌اتکا پیدا نشد.")
-                else:
-                    for i, r in enumerate(lows, 1):
-                        name = r.get("name_fa") or r.get("country_code") or "?"
-                        di = int(float(r.get("daily_income") or 0))
-                        un = r.get("username") or r.get("display_name") or r.get("owner_player_id")
-                        at = f"@{un}" if un and not str(un).isdigit() else str(un)
-                        lines.append(f"{i}) {name} — درآمد روزانه: {di:,} — {at}")
-                lines += [
-                    "",
-                    "مبلغی که باید از خزانهٔ هر کشور کم شود را به عدد بفرستید.",
-                    "اگر موجودی کمتر باشد، خزانه صفر می‌شود.",
-                    "مثال: 50000000",
-                ]
-                await _set_pending(game, pid, "owner_mass_deduct")
-                await out("\n".join(lines), ik([cancel_row()]), force_new=True)
-                return
 
             # 30s menu timeout for interactive ng: menus
             try:
@@ -3817,6 +3785,51 @@ def register_handlers(bot, app_ctx: dict):
                     back_row(),
                 ]))
                 return
+            
+            if data == "ng:omassdeduct":
+                try:
+                    if hasattr(cq, "answer"):
+                        await cq.answer(text="کسر همگانی", show_alert=False)
+                except Exception:
+                    pass
+                if not (game.is_owner(pid) or game.is_primary_owner(pid)):
+                    await out("❌ فقط مالک ربات می‌تواند کسر همگانی بزند.", force_new=True)
+                    return
+                try:
+                    lows = await game.lowest_active_incomes(limit=3, days=3)
+                except Exception:
+                    log.exception("lowest incomes")
+                    lows = []
+                lines = [
+                    "💸 کسر همگانی از درآمد روزانه",
+                    "━━━━━━━━━━━━",
+                    "⚠️ این عملیات از خزانه کم نمی‌کند؛ از درآمد روزانه کم می‌شود.",
+                    "",
+                    "📊 کم‌درآمدترین کشورهای فعال (۳ روز اخیر):",
+                ]
+                if not lows:
+                    lines.append("کشور فعالی پیدا نشد — می‌توانید همچنان مبلغ را وارد کنید.")
+                else:
+                    labels = ["کمترین", "دومین", "سومین"]
+                    for i, r in enumerate(lows[:3]):
+                        name = r.get("name_fa") or r.get("country_code") or "?"
+                        di = int(float(r.get("daily_income") or 0))
+                        un = r.get("username") or r.get("display_name") or r.get("owner_player_id")
+                        at = f"@{un}" if un and not str(un).isdigit() else str(un)
+                        lab = labels[i] if i < len(labels) else f"{i+1}"
+                        lines.append(f"• {lab} فرد/کشور: {name} — درآمد روزانه: {di:,} — {at}")
+                lines += [
+                    "",
+                    "عددی که می‌فرستید از درآمد روزانهٔ همه کشورها کم می‌شود.",
+                    "اگر درآمد کسی کمتر از آن عدد باشد، درآمدش ۰ می‌شود.",
+                    "مثال: 50000000",
+                    "",
+                    "لطفاً مبلغ کسر را به عدد بفرستید:",
+                ]
+                await _set_pending(game, pid, "owner_mass_deduct")
+                await out("\n".join(lines), ik([cancel_row()]), force_new=True)
+                return
+
             if data == "ng:spin:go":
                 try:
                     msg = await game.lucky_spin(pid)

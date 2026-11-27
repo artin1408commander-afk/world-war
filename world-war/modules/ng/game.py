@@ -108,6 +108,7 @@ class Game:
             "ALTER TABLE world_meta ADD COLUMN main_group_id TEXT",
             "ALTER TABLE world_meta ADD COLUMN log_group_id TEXT",
             "ALTER TABLE world_meta ADD COLUMN hardcore_mode INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE ng_countries ADD COLUMN income_cut DOUBLE PRECISION NOT NULL DEFAULT 0",
             """CREATE TABLE IF NOT EXISTS ng_user_pending (
                 player_id BIGINT PRIMARY KEY,
                 kind TEXT NOT NULL,
@@ -1082,6 +1083,17 @@ class Game:
             if oil_inc > OIL_INCOME_CAP:
                 oil_inc = OIL_INCOME_CAP
             income += oil_inc
+        # Permanent owner cuts (mass deduct daily income)
+        try:
+            row_cut = await self.db.fetchrow(
+                "SELECT COALESCE(income_cut,0) AS income_cut FROM ng_countries WHERE country_code=$1",
+                (code,),
+            )
+            cut = float((row_cut or {}).get("income_cut") or 0)
+        except Exception:
+            cut = 0.0
+        if cut > 0:
+            income = max(0.0, float(income) - cut)
         await self.db.execute(
             "UPDATE ng_countries SET daily_income=$1, daily_expense=$2 WHERE country_code=$3",
             (income, expense, code),
@@ -2043,15 +2055,32 @@ class Game:
         return out
 
     async def admin_mass_deduct_treasury(self, actor: int, amount: float) -> str:
-        """Deduct amount from every owned country treasury; floor at 0."""
+        """Backward-compatible name — deducts from DAILY INCOME, not treasury."""
+        return await self.admin_mass_deduct_daily_income(actor, amount)
+
+    async def admin_mass_deduct_daily_income(self, actor: int, amount: float) -> str:
+        """Cut daily income for every living owned country; floor at 0 (persistent via income_cut)."""
         if not self.is_owner(int(actor)):
             raise GameError("فقط مالک")
         amount = float(amount)
         if amount <= 0:
             raise GameError("مبلغ باید بزرگ‌تر از صفر باشد.")
+        # Ensure column exists
+        try:
+            await self.db.execute(
+                "ALTER TABLE ng_countries ADD COLUMN IF NOT EXISTS income_cut DOUBLE PRECISION NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            try:
+                await self.db.execute(
+                    "ALTER TABLE ng_countries ADD COLUMN income_cut DOUBLE PRECISION NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass
         rows = await self.db.fetch(
             """
-            SELECT country_code, name_fa, treasury, owner_player_id
+            SELECT country_code, name_fa, COALESCE(daily_income,0) AS daily_income,
+                   COALESCE(income_cut,0) AS income_cut, owner_player_id
             FROM ng_countries
             WHERE owner_player_id IS NOT NULL AND COALESCE(is_destroyed,0)=0
             """
@@ -2061,28 +2090,27 @@ class Game:
         for r in rows or []:
             try:
                 code = r["country_code"]
-                tre = float(r.get("treasury") or 0)
-                new_t = tre - amount
-                if new_t < 0:
-                    new_t = 0.0
+                di = float(r.get("daily_income") or 0)
+                cut = float(r.get("income_cut") or 0)
+                # Increase permanent cut by amount; effective income floors at 0
+                new_cut = cut + amount
+                new_di = max(0.0, di - amount)
+                if new_di <= 0:
                     zeroed += 1
                 await self.db.execute(
-                    "UPDATE ng_countries SET treasury=$1 WHERE country_code=$2",
-                    (new_t, code),
+                    "UPDATE ng_countries SET income_cut=$1, daily_income=$2 WHERE country_code=$3",
+                    (new_cut, new_di, code),
                 )
-                try:
-                    await self.sync_cash_from_country(code)
-                except Exception:
-                    pass
                 ok += 1
             except Exception:
-                log.exception("mass deduct %s", r.get("country_code"))
-        await self.admin_log(int(actor), "mass_deduct", f"amount={amount} ok={ok} zeroed={zeroed}")
+                log.exception("mass income deduct %s", r.get("country_code"))
+        await self.admin_log(int(actor), "mass_income_deduct", f"amount={amount} ok={ok} zeroed={zeroed}")
         return (
-            f"✅ کسر همگانی انجام شد.\n"
-            f"مبلغ از هر کشور: {int(amount):,}\n"
+            f"✅ کسر همگانی از درآمد روزانه انجام شد.\n"
+            f"کسر از درآمد هر کشور: {int(amount):,}\n"
             f"کشورهای پردازش‌شده: {ok}\n"
-            f"به صفر رسیدند: {zeroed}"
+            f"درآمدشان صفر شد: {zeroed}\n"
+            f"(خزانه دست نخورده؛ این کسر بعد از محاسبه مجدد ساختمان‌ها هم اعمال می‌شود)"
         )
 
     async def admin_set_all_hp_full(self, actor: int) -> str:
