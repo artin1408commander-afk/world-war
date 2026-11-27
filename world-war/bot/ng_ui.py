@@ -1825,6 +1825,32 @@ def register_handlers(bot, app_ctx: dict):
                     return
 
                 
+                
+                if kind == "owner_set_income_all":
+                    if not game.is_owner(pid):
+                        await reply(message, "❌ فقط مالک")
+                        await _clear_pending(game, pid)
+                        return
+                    raw = (text or "").replace(",", "").replace("٬", "").replace(" ", "").strip()
+                    raw = raw.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+                    try:
+                        amount = float(raw)
+                    except Exception:
+                        await reply(message, "❌ یک عدد معتبر بنویسید. مثال: 100000000")
+                        return
+                    if amount < 0:
+                        await reply(message, "❌ مبلغ نمی‌تواند منفی باشد.")
+                        return
+                    try:
+                        msg = await game.admin_set_daily_income_all(pid, amount)
+                    except GameError as e:
+                        msg = f"❌ {e}"
+                    except Exception as e:
+                        log.exception("set income all")
+                        msg = f"❌ {e}"
+                    await _clear_pending(game, pid)
+                    await reply(message, msg)
+                    return
                 if kind == "owner_mass_deduct":
                     if not game.is_owner(pid):
                         await reply(message, "❌ فقط مالک")
