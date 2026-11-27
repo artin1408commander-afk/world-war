@@ -2533,6 +2533,40 @@ def register_handlers(bot, app_ctx: dict):
                     await cq.answer(text="⏳", show_alert=False)
             except Exception:
                 pass
+
+            if data == "ng:omassdeduct":
+                if not game.is_owner(pid):
+                    await out("❌ فقط مالک", force_new=True)
+                    return
+                try:
+                    lows = await game.lowest_active_incomes(limit=3, days=3)
+                except Exception:
+                    log.exception("lowest incomes")
+                    lows = []
+                lines = [
+                    "💸 کسر همگانی از خزانه همه کشورها",
+                    "━━━━━━━━━━━━",
+                    "📊 کم‌درآمدترین کشورهای فعال (۳ روز اخیر):",
+                ]
+                if not lows:
+                    lines.append("هنوز کشور فعالی با دادهٔ قابل‌اتکا پیدا نشد.")
+                else:
+                    for i, r in enumerate(lows, 1):
+                        name = r.get("name_fa") or r.get("country_code") or "?"
+                        di = int(float(r.get("daily_income") or 0))
+                        un = r.get("username") or r.get("display_name") or r.get("owner_player_id")
+                        at = f"@{un}" if un and not str(un).isdigit() else str(un)
+                        lines.append(f"{i}) {name} — درآمد روزانه: {di:,} — {at}")
+                lines += [
+                    "",
+                    "مبلغی که باید از خزانهٔ هر کشور کم شود را به عدد بفرستید.",
+                    "اگر موجودی کمتر باشد، خزانه صفر می‌شود.",
+                    "مثال: 50000000",
+                ]
+                await _set_pending(game, pid, "owner_mass_deduct")
+                await out("\n".join(lines), ik([cancel_row()]), force_new=True)
+                return
+
             # 30s menu timeout for interactive ng: menus
             try:
                 msg_to = getattr(cq, "message", None)

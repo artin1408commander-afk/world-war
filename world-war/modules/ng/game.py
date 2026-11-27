@@ -1050,8 +1050,10 @@ class Game:
         # Oil barrels: small stepped income — every 20 barrels => +10,000,000 / day
         # (not per-barrel catalog income)
         OIL_INCOME_ITEMS = {"res_oil", "oil", "oil_barrel", "res_oil_barrel"}
-        OIL_STEP = 20
-        OIL_STEP_INCOME = 10_000_000.0
+        # Nerf: barrels alone must not mint tens of billions
+        OIL_STEP = 200
+        OIL_STEP_INCOME = 250_000.0
+        OIL_INCOME_CAP = 25_000_000.0
         oil_barrels = 0.0
         for r in inv:
             item_code = str(r.get("item_code") or "")
@@ -1076,7 +1078,10 @@ class Game:
             log.exception("recalc oil stock")
         steps = int(oil_barrels) // OIL_STEP
         if steps > 0:
-            income += float(steps) * OIL_STEP_INCOME
+            oil_inc = float(steps) * OIL_STEP_INCOME
+            if oil_inc > OIL_INCOME_CAP:
+                oil_inc = OIL_INCOME_CAP
+            income += oil_inc
         await self.db.execute(
             "UPDATE ng_countries SET daily_income=$1, daily_expense=$2 WHERE country_code=$3",
             (income, expense, code),
@@ -1989,6 +1994,53 @@ class Game:
             )
 
 
+
+
+    async def lowest_active_incomes(self, limit: int = 3, days: int = 3) -> list[dict]:
+        """Bottom daily_income among owned countries whose owner was active recently."""
+        try:
+            rows = await self.db.fetch(
+                """
+                SELECT c.country_code, c.name_fa, c.daily_income, c.treasury,
+                       c.owner_player_id, p.username, p.display_name,
+                       COALESCE(pa.last_active_at, p.last_seen_at) AS act_at
+                FROM ng_countries c
+                JOIN ng_players p ON p.player_id = c.owner_player_id
+                LEFT JOIN ng_player_activity pa ON pa.player_id = c.owner_player_id
+                WHERE c.owner_player_id IS NOT NULL
+                  AND COALESCE(c.is_destroyed,0)=0
+                  AND COALESCE(c.country_code,'') NOT IN ('UN','un')
+                ORDER BY COALESCE(c.daily_income,0) ASC
+                LIMIT 80
+                """
+            )
+        except Exception:
+            log.exception("lowest_active_incomes")
+            rows = []
+        from datetime import datetime, timedelta, timezone
+        cutoff = datetime.now(timezone.utc) - timedelta(days=int(days))
+        out = []
+        for r in rows or []:
+            act = r.get("act_at")
+            ok = False
+            if act:
+                try:
+                    if isinstance(act, datetime):
+                        dt = act if act.tzinfo else act.replace(tzinfo=timezone.utc)
+                    else:
+                        s = str(act).replace("Z", "+00:00")
+                        dt = datetime.fromisoformat(s)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                    ok = dt >= cutoff
+                except Exception:
+                    ok = True  # if parse fails, still consider if has owner
+            if not ok:
+                continue
+            out.append(dict(r))
+            if len(out) >= int(limit):
+                break
+        return out
 
     async def admin_mass_deduct_treasury(self, actor: int, amount: float) -> str:
         """Deduct amount from every owned country treasury; floor at 0."""
