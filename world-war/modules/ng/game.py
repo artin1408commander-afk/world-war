@@ -2008,7 +2008,7 @@ class Game:
 
 
 
-    async def lowest_active_incomes(self, limit: int = 3, days: int = 3) -> list[dict]:
+    async def lowest_active_incomes(self, limit: int = 10, days: int = 3) -> list[dict]:
         """Bottom daily_income among owned countries whose owner was active recently."""
         try:
             rows = await self.db.fetch(

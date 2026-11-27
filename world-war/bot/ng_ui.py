@@ -3796,7 +3796,7 @@ def register_handlers(bot, app_ctx: dict):
                     await out("❌ فقط مالک ربات می‌تواند کسر همگانی بزند.", force_new=True)
                     return
                 try:
-                    lows = await game.lowest_active_incomes(limit=3, days=3)
+                    lows = await game.lowest_active_incomes(limit=10, days=3)
                 except Exception:
                     log.exception("lowest incomes")
                     lows = []
@@ -3805,19 +3805,17 @@ def register_handlers(bot, app_ctx: dict):
                     "━━━━━━━━━━━━",
                     "⚠️ این عملیات از خزانه کم نمی‌کند؛ از درآمد روزانه کم می‌شود.",
                     "",
-                    "📊 کم‌درآمدترین کشورهای فعال (۳ روز اخیر):",
+                    "📊 ۱۰ کشور کم‌درآمد فعال (۳ روز اخیر):",
                 ]
                 if not lows:
                     lines.append("کشور فعالی پیدا نشد — می‌توانید همچنان مبلغ را وارد کنید.")
                 else:
-                    labels = ["کمترین", "دومین", "سومین"]
-                    for i, r in enumerate(lows[:3]):
+                    for i, r in enumerate(lows[:10], 1):
                         name = r.get("name_fa") or r.get("country_code") or "?"
                         di = int(float(r.get("daily_income") or 0))
                         un = r.get("username") or r.get("display_name") or r.get("owner_player_id")
                         at = f"@{un}" if un and not str(un).isdigit() else str(un)
-                        lab = labels[i] if i < len(labels) else f"{i+1}"
-                        lines.append(f"• {lab} فرد/کشور: {name} — درآمد روزانه: {di:,} — {at}")
+                        lines.append(f"{i}) {name} — درآمد روزانه: {di:,} — {at}")
                 lines += [
                     "",
                     "عددی که می‌فرستید از درآمد روزانهٔ همه کشورها کم می‌شود.",
