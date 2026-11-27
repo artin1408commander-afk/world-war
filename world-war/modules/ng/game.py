@@ -2113,6 +2113,67 @@ class Game:
             f"(خزانه دست نخورده؛ این کسر بعد از محاسبه مجدد ساختمان‌ها هم اعمال می‌شود)"
         )
 
+
+    async def admin_set_daily_income_all(self, actor: int, amount: float) -> str:
+        """Set daily income (display + base grant) for every living owned country."""
+        if not self.is_owner(int(actor)):
+            raise GameError("فقط مالک")
+        amount = float(amount)
+        if amount < 0:
+            raise GameError("مبلغ نمی‌تواند منفی باشد.")
+        try:
+            await self.db.execute(
+                "ALTER TABLE ng_countries ADD COLUMN IF NOT EXISTS income_cut DOUBLE PRECISION NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            try:
+                await self.db.execute(
+                    "ALTER TABLE ng_countries ADD COLUMN income_cut DOUBLE PRECISION NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass
+        rows = await self.db.fetch(
+            """
+            SELECT country_code FROM ng_countries
+            WHERE owner_player_id IS NOT NULL AND COALESCE(is_destroyed,0)=0
+            """
+        )
+        ok = 0
+        for r in rows or []:
+            code = r["country_code"]
+            try:
+                await self.db.execute(
+                    "UPDATE ng_countries SET daily_income=$1, income_cut=0 WHERE country_code=$2",
+                    (amount, code),
+                )
+                try:
+                    await self.db.execute(
+                        """
+                        UPDATE ng_country_control
+                        SET base_daily_income=$1, updated_at=COALESCE(updated_at, updated_at)
+                        WHERE country_code=$2
+                        """,
+                        (amount, code),
+                    )
+                except Exception:
+                    try:
+                        await self.db.execute(
+                            "UPDATE ng_country_control SET base_daily_income=$1 WHERE country_code=$2",
+                            (amount, code),
+                        )
+                    except Exception:
+                        pass
+                ok += 1
+            except Exception:
+                log.exception("set daily income %s", code)
+        await self.admin_log(int(actor), "set_daily_income_all", f"amount={amount} ok={ok}")
+        return (
+            f"✅ درآمد روزانه همه کشورها ست شد.\n"
+            f"مقدار جدید: {int(amount):,}\n"
+            f"کشورهای به‌روزشده: {ok}\n"
+            f"(کسرهای قبلی income_cut صفر شد؛ درآمد پایه هم هم‌تراز شد)"
+        )
+
     async def admin_set_all_hp_full(self, actor: int) -> str:
         """Set every living (non-destroyed) country to exactly 1000/1000 HP."""
         if not self.is_owner(int(actor)):

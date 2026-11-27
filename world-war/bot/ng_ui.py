@@ -831,6 +831,7 @@ def register_handlers(bot, app_ctx: dict):
                     [("👤 بازیکنان", "ng:o:hub:players"), ("🗺 کشورها", "ng:o:hub:countries")],
                     [("🛡 Sethp ۱۰۰۰/۱۰۰۰", "ng:ohpfull")],
                     [("☠️ هاردکور", "ng:ohardcore:status"), ("💸 کسر همگانی", "ng:omassdeduct")],
+                    [("⚙️ ست درآمد", "ng:osetincome")],
                     [("💰 اقتصاد", "ng:o:hub:economy"), ("📦 تجهیزات", "ng:o:hub:inventory")],
                     [("🕊 دیپلماسی", "ng:o:hub:diplo"), ("⚔️ جنگ", "ng:o:hub:wars")],
                     [("⚙️ تنظیمات", "ng:o:hub:settings"), ("📋 گزارش‌ها", "ng:o:hub:logs")],
@@ -3786,6 +3787,30 @@ def register_handlers(bot, app_ctx: dict):
                 ]))
                 return
             
+            
+            if data == "ng:osetincome":
+                try:
+                    if hasattr(cq, "answer"):
+                        await cq.answer(text="ست درآمد", show_alert=False)
+                except Exception:
+                    pass
+                if not (game.is_owner(pid) or game.is_primary_owner(pid)):
+                    await out("❌ فقط مالک ربات.", force_new=True)
+                    return
+                await _set_pending(game, pid, "owner_set_income_all")
+                await out(
+                    "⚙️ ست درآمد روزانه همه کشورها\n"
+                    "━━━━━━━━━━━━\n"
+                    "عددی که می‌فرستید به‌عنوان درآمد روزانهٔ همه کشورهای زنده‌ی دارای مالک ثبت می‌شود.\n"
+                    "کسرهای قبلی (income_cut) پاک می‌شود و درآمد پایه هم هم‌تراز می‌شود.\n\n"
+                    "مثال: 100000000\n"
+                    "برای صفر کردن: 0\n\n"
+                    "لطفاً مبلغ را به عدد بفرستید:",
+                    ik([cancel_row()]),
+                    force_new=True,
+                )
+                return
+
             if data == "ng:omassdeduct":
                 try:
                     if hasattr(cq, "answer"):
